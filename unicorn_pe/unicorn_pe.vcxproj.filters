@@ -33,6 +33,15 @@
     <ClCompile Include="iat.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="util.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Filesystem.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Logger.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nativestructs.h">
@@ -45,6 +54,15 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="iat.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="util.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="joaat.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="membricksafe.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

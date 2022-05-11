@@ -49,7 +49,7 @@ void PeEmulation::DisasmFunction(ULONG64 FunctionBegin, ULONG64 FunctionEnd, con
 	{
 		for (size_t i = 0; i < count; ++i)
 		{
-			if (callback(&insn[i], insn[i].address, insn[i].size, i))
+			if (callback(&insn[i], insn[i].address, insn[i].size, (int)i))
 				break;
 		}
 		cs_free(insn, count);
@@ -210,7 +210,7 @@ bool PeEmulation::RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffe
 						if (FunctionBegin == call_target_addr)
 						{
 							//it's part of normal function entry, ignore
-							printf("0x%x call to 0x%x to part of normal function entry, ignore.\n", insn_rva, call_target_addr);
+							printf("0x%x call to 0x%llx to part of normal function entry, ignore.\n", insn_rva, call_target_addr);
 							continue;
 						}
 					}
@@ -249,7 +249,7 @@ bool PeEmulation::RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffe
 						if(isValidInsn)
 						{
 							vmpcalls.emplace_back(insn_rva - 2, call_target_rva);
-							printf("0x%x vmpcall to 0x%x recorded.\n", insn_rva - 2, call_target_addr);
+							printf("0x%x vmpcall to 0x%llx recorded.\n", insn_rva - 2, call_target_addr);
 							default_rva = false;
 						}
 					}
@@ -281,7 +281,7 @@ bool PeEmulation::RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffe
 						if (isValidInsn)
 						{
 							vmpcalls.emplace_back(insn_rva - 1, call_target_rva);
-							printf("0x%x vmpcall to 0x%x recorded.\n", insn_rva - 1, call_target_addr);
+							printf("0x%x vmpcall to 0x%llx recorded.\n", insn_rva - 1, call_target_addr);
 							default_rva = false;
 						}
 					}
@@ -315,7 +315,7 @@ bool PeEmulation::RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffe
 					if (isValidInsn)
 					{
 						vmpcalls.emplace_back(insn_rva - 1, call_target_rva);
-						printf("0x%x vmpcall to 0x%x recorded.\n", insn_rva - 1, call_target_addr);
+						printf("0x%x vmpcall to 0x%llx recorded.\n", insn_rva - 1, call_target_addr);
 						default_rva = false;
 					}
 				}
@@ -323,7 +323,7 @@ bool PeEmulation::RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffe
 				if(default_rva)
 				{
 					vmpcalls.emplace_back(insn_rva, call_target_rva);
-					printf("0x%x vmpcall to 0x%x recorded.\n", insn_rva, call_target_addr);
+					printf("0x%x vmpcall to 0x%llx recorded.\n", insn_rva, call_target_addr);
 				}
 			}
 		}
@@ -752,7 +752,7 @@ bool PeEmulation::RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffe
 	memset(&SectionHeader[SectionCount], 0, sizeof(IMAGE_SECTION_HEADER));
 	SectionHeader[SectionCount].VirtualAddress = SectionHeader[SectionCount].PointerToRawData = NewIATRva;
 	SectionHeader[SectionCount].SizeOfRawData = (DWORD)RebuildSize;
-	SectionHeader[SectionCount].Misc.VirtualSize = RebuildSize;
+	SectionHeader[SectionCount].Misc.VirtualSize = (DWORD)RebuildSize;
 	SectionHeader[SectionCount].Characteristics = IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE;
 	memcpy(SectionHeader[SectionCount].Name, ".ucpe\0\0\0", 8);
 	ntheader->FileHeader.NumberOfSections++;

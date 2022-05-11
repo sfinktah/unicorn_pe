@@ -1,0 +1,11 @@
+#pragma once
+#define LOG_NOOP LOGF
+#define LOG_TRACE LOG_NOOP
+#define LOG_INFO LOG_NOOP
+#define LOG_DEBUG LOG_NOOP
+#define LOG_WARN LOG_NOOP
+#define LOG_FUNC LOG_NOOP
+#define LOG_ERROR LOG_NOOP
+#define LOG_TRACE_UNIQ LOG_NOOP
+#define LOG_TRACE_UNIQ_KEYED LOG_NOOP
+

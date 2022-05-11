@@ -533,7 +533,7 @@ call_result_t<ModuleDataPtr> MMap::FindOrMapModule(
     }
     
     // Fill TLS callbacks
-    pImage->peImage.GetTLSCallbacks( pImage->imgMem.ptr<ptr_t>(), pImage->tlsCallbacks );
+    // XXX: pImage->peImage.GetTLSCallbacks( pImage->imgMem.ptr<ptr_t>(), pImage->tlsCallbacks );
 
     // Unload local copy
     pImage->peImage.Release();

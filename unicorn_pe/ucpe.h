@@ -147,6 +147,8 @@ public:
 	void SortModuleList();
 
 	void MapImageToEngine(const std::wstring &ImageName, PVOID ImageBase, ULONG ImageSize, ULONG64 MappedBase, ULONG64 EntryPoint);
+	uintptr_t NormaliseBase(ULONG64 address) const;
+
 	bool FindAddressInRegion(ULONG64 address, std::stringstream &RegionName);
 	bool FindAPIByAddress(ULONG64 address, std::wstring &DllName, FakeAPI_t **api);
 	bool FindSectionByAddress(ULONG64 address, FakeSection_t **section);
@@ -254,6 +256,8 @@ public:
 	bool m_Dump;
 	bool m_Cache;
 	bool m_HasCache;
+	bool m_FindChecks;
+	bool m_Bitmap;
 
 	uint64_t m_KSharedUserDataBase;
 	uint64_t m_KSharedUserDataEnd;
@@ -301,7 +305,23 @@ public:
 	UCHAR m_RtlpUnwindOpSlotTable[11];
 	int m_ExecuteExceptionHandler;
 	std::string filename;
+
+	std::string m_SaveWritten;
+	std::string m_SaveRead;
+
+	std::vector<std::tuple<uintptr_t, uint8_t>> m_Written;
+	std::vector<std::tuple<uintptr_t, uint8_t>> m_Read;
+	std::vector<bool> m_WrittenBitmap;
 };
+
+extern PeEmulation g_ctx;
+
+void* uc_memcpy( uc_engine* uc, uintptr_t _Dst, void const* _Src, size_t _Size);
+
+int uc_memcmp( uc_engine* uc, uintptr_t _Dst, void const* _Src, size_t _Size);
+
+void* uc_memset( uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size);
+
 
 #define API_FUNCTION_SIZE 8
 #define PAGE_SIZE 0x1000

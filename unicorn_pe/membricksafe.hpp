@@ -66,8 +66,8 @@ struct PATCH_ENTRY {
     PATCH_ENTRY(const char* name) : name(name), pTarget(0), isEnabled(false), dontRemove(false), checkData(false) {
         patchlist.emplace(name, *this);
     };
-    std::string name;  // only populated in dev builds
-    uintptr_t pTarget;    // Address of the target function.
+    std::string name;   // only populated in dev builds
+    uintptr_t pTarget;  // Address of the target function.
     std::vector<BYTE> original, patched;
     bool isEnabled : 1;   // Enabled.
     bool dontRemove : 1;  // Don't remove during unload
@@ -218,31 +218,31 @@ namespace membricksafe {
 
         bool protect(std::size_t size, std::uint32_t newProtect, std::uint32_t* oldProtect) {
             if (oldProtect) *oldProtect = newProtect;
-			return true;
+            return true;
             //return VirtualProtect(this->as<void*>(), size, (DWORD)newProtect, (DWORD*)oldProtect) == TRUE;
         }
 
         R nop(std::size_t count) {
-			const unsigned char nop_bytes[][8] = {
-				{},
-				{0x90},
-				{0x66, 0x90},
-				{0x0f, 0x1f, 0x00},
-				{0x0f, 0x1f, 0x40, 0x00},
-				{0x0f, 0x1f, 0x44, 0x00, 0x00},
-				{0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00},
-				{0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00},
-				{0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
-			};
+            const unsigned char nop_bytes[][8] = {
+                {},
+                {0x90},
+                {0x66, 0x90},
+                {0x0f, 0x1f, 0x00},
+                {0x0f, 0x1f, 0x40, 0x00},
+                {0x0f, 0x1f, 0x44, 0x00, 0x00},
+                {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00},
+                {0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00},
+                {0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+            };
 
-			uc_err err = UC_ERR_OK;
-			uintptr_t address = this->as<uintptr_t>();
-			while (err == UC_ERR_OK && count) {
-				size_t size = count > 8 ? 8 : count;
-				err         = uc_memcpy(g_ctx.m_uc, address, nop_bytes[size], size) ? UC_ERR_OK : UC_ERR_EXCEPTION;
-				count       = count - size;
-				address     = address + size;
-			}
+            uc_err err        = UC_ERR_OK;
+            uintptr_t address = this->as<uintptr_t>();
+            while (err == UC_ERR_OK && count) {
+                size_t size = count > 8 ? 8 : count;
+                err         = uc_memcpy(g_ctx.m_uc, address, nop_bytes[size], size) ? UC_ERR_OK : UC_ERR_EXCEPTION;
+                count       = count - size;
+                address     = address + size;
+            }
             return _handle;
         }
 
@@ -293,7 +293,7 @@ namespace membricksafe {
 
         R jmp(const uintptr_t func) {
             this->write<uint8_t>(0xe9);
-            this->offset(1).write<int>(func - this->as<uintptr_t>() - 5);
+            this->offset(1).write<int>((int)(func - this->as<uintptr_t>() - 5));
             return this->_handle;
         }
 
@@ -323,7 +323,8 @@ namespace membricksafe {
             // put<int>((uintptr_t)this->as<uintptr_t>() + 1, (intptr_t)funcstub - (intptr_t)get_adjusted(this->as<uintptr_t>()) - 5);
             this->offset(1).write<int>((intptr_t)func - (intptr_t)_handle - 5)
 
-            patch.patched.insert(patch.patched.end(), &p[0], &p[5]), g_patches.emplace_front(std::move(patch));
+                patch.patched.insert(patch.patched.end(), &p[0], &p[5]),
+                g_patches.emplace_front(std::move(patch));
             return &g_patches.front();
         }
 
@@ -364,7 +365,7 @@ namespace membricksafe {
             }
 
             if (patch) {
-                patch->pTarget   = this->as<void*>();
+                patch->pTarget   = this->as<uintptr_t>();
                 patch->isEnabled = 1;
             }
             char* p;
@@ -498,7 +499,7 @@ namespace membricksafe {
         explicit memBrick_error(const char* what) : BASECLASS(what) {}
     };
 
-    constexpr const bool _useExceptions = true;
+    constexpr const bool _useExceptions = false;
     class memBrickSafe : public memBrickBase<memBrickSafe> {
 
     protected:
@@ -511,8 +512,8 @@ namespace membricksafe {
 
     public:
         memBrickSafe() : memBrickBase(nullptr) {}
-        memBrickSafe(void* p) : memBrickBase(p) { will_derefence(); }
-        memBrickSafe(std::uintptr_t p) : memBrickBase(p) { will_derefence(); }
+        memBrickSafe(void* p) : memBrickBase(p) {}
+        memBrickSafe(std::uintptr_t p) : memBrickBase(p) {}
         memBrickSafe(const memBrickSafe& copy) : memBrickBase(static_cast<memBrickBase>(copy)) { will_derefence(); }
 
         bool isNull() const { return _handle == nullptr; }
@@ -602,6 +603,94 @@ namespace membricksafe {
             }
             return (static_cast<memBrickSafe>(offset(pos / 3))).rip(4);
         }
+
+        template <typename Func>
+        R and_then(Func&& func) const {
+            return _handle ? std::forward<Func>(func)(*this) : 0LLU;
+        }
+
+        template <typename Func>
+        R or_else(Func&& func) const {
+            return _handle ? *this : std::forward<Func>(func)();
+        }
+
+        template <typename Func, typename Func2>
+        R tee(Func&& func) const {
+            std::forward<Func>(func)();
+            return *this;
+        }
+
+        R is_match(const char* pattern) {
+            return this->find(pattern);
+        }
+
+        R find(const char* pattern, std::size_t size = 0) {
+            struct nibble {
+                std::uint8_t value  = 0;
+                std::uint8_t offset = 0;
+            } nibbles[128];
+
+            std::size_t count = 0;
+
+            for (; pattern; pattern = std::strpbrk(pattern, " ")) {
+                pattern += std::strspn(pattern, " ");  // Discard whitespace
+
+                if (pattern[0] != '?') {
+                    nibbles[count].value      = std::uint8_t(std::strtol(pattern, nullptr, 16));
+                    nibbles[count + 1].offset = nibbles[count].offset;
+
+                    count++;
+                }
+
+                nibbles[count].offset++;
+            }
+
+            if (!size) size = nibbles[count].offset + 1;
+			auto end = size - nibbles[count].offset;
+            printf("base: %llx\n", this->as<uintptr_t>());
+            printf("size: %llu\n", size);
+            printf("end: %llx\n", size);
+            for (std::size_t i = 0; i < end; i++) {
+                R currentOffset = this->offset(i);
+
+                bool found = true;
+
+                for (std::size_t j = 0; j < count; ++j) {
+                    if (nibbles[j].value != currentOffset.offset(nibbles[j].offset).read<std::uint8_t>()) {
+                        found = false;
+
+                        break;
+                    }
+                }
+
+                if (found) {
+                    return currentOffset;
+                }
+            }
+
+            return nullptr;
+        }
+
+    //    R find(const char* pattern, std::size_t size = 0) {
+    //        memBrickSafe result = memBrick::scan(this->_handle, size, pattern);
+    //        if (result) {
+    //            printf("found at offset %llu\n", result.as<uintptr_t>());
+				//return this->add(result.as<uintptr_t>());
+    //        } else {
+				//printf("not found\n");
+				//return nullptr;
+    //        }
+    //    }
+
+        uint32_t dword() {
+            return this->as<uint32_t&>();
+        }
+
+        R dword(uint32_t value) {
+            this->as<uint32_t&>() = value;
+            return this->_handle;
+        }
+
     };
 
     // memBrickSafe SafeScan(const char* pattern, DWORD patternHash = 0);

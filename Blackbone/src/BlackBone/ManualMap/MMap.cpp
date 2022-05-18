@@ -40,10 +40,11 @@ call_result_t<ModuleDataPtr> MMap::MapImage(
     MapCallback mapCallback /*= nullptr*/,
     void* context /*= nullptr*/,
     CustomArgs_t* pCustomArgs /*= nullptr*/,
-	ptr_t forceMapToAddr
+	ptr_t forceMapToAddr,
+	::blackbone::pe::PreMapCallback preMapCallback
     )
 {
-    return MapImageInternal( path, nullptr, 0, false, flags, mapCallback, context, pCustomArgs, forceMapToAddr);
+    return MapImageInternal( path, nullptr, 0, false, flags, mapCallback, context, pCustomArgs, forceMapToAddr, preMapCallback);
 }
 
 /// <summary>
@@ -63,14 +64,15 @@ call_result_t<ModuleDataPtr> MMap::MapImage(
     MapCallback mapCallback /*= nullptr*/,
     void* context /*= nullptr*/,
     CustomArgs_t* pCustomArgs /*= nullptr*/,
-	ptr_t forceMapToAddr
+	ptr_t forceMapToAddr,
+	::blackbone::pe::PreMapCallback preMapCallback
     )
 {
     // Create fake path
     wchar_t path[64];
     wsprintfW( path, L"MemoryImage_0x%p", buffer );
 
-    return MapImageInternal( path, buffer, size, asImage, flags, mapCallback, context, pCustomArgs, forceMapToAddr);
+    return MapImageInternal( path, buffer, size, asImage, flags, mapCallback, context, pCustomArgs, forceMapToAddr, preMapCallback);
 }
 
 /// <summary>
@@ -92,7 +94,8 @@ call_result_t<ModuleDataPtr> MMap::MapImageInternal(
     MapCallback mapCallback /*= nullptr*/,
     void* context /*= nullptr*/,
     CustomArgs_t* pCustomArgs /*= nullptr*/,
-	ptr_t forceMapToAddr
+	ptr_t forceMapToAddr,
+	::blackbone::pe::PreMapCallback preMapCallback
     )
 {
     // Already loaded
@@ -118,12 +121,13 @@ call_result_t<ModuleDataPtr> MMap::MapImageInternal(
 
     // Set native loader callback
     _mapCallback = mapCallback;
+	_preMapCallback = preMapCallback;
     _userContext = context;
 
     BLACKBONE_TRACE( L"ManualMap: Mapping image '%ls' with flags 0x%x", path.c_str(), flags );
 
     // Map module and all dependencies
-    auto mod = FindOrMapModule( path, buffer, size, asImage, flags, forceMapToAddr);
+    auto mod = FindOrMapModule( path, buffer, size, asImage, flags, forceMapToAddr, preMapCallback);
     if (!mod)
     {
         Cleanup();
@@ -280,7 +284,8 @@ call_result_t<ModuleDataPtr> MMap::FindOrMapModule(
     const std::wstring& path,
     void* buffer, size_t size, bool asImage,
     eLoadFlags flags /*= NoFlags*/ ,
-	ptr_t forceMapToAddr
+	ptr_t forceMapToAddr,
+	::blackbone::pe::PreMapCallback preMapCallback
     )
 {
     NTSTATUS status = STATUS_SUCCESS;
@@ -292,7 +297,8 @@ call_result_t<ModuleDataPtr> MMap::FindOrMapModule(
     pImage->flags = flags;
 
     // Load and parse image
-    status = buffer ? pImage->peImage.Load( buffer, size, !asImage ) : pImage->peImage.Load( path, flags & NoSxS ? true : false );
+	pImage->preMapCallback = preMapCallback;
+    status = buffer ? pImage->peImage.Load( buffer, size, !asImage ) : pImage->peImage.Load( path, flags & NoSxS ? true : false, preMapCallback );
     if (!NT_SUCCESS( status ))
     {
         BLACKBONE_TRACE( L"ManualMap: Failed to load image '%ls'/0x%p. Status 0x%X", path.c_str(), buffer, status );

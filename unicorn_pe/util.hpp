@@ -4,6 +4,7 @@
 #include <regex>
 using namespace std::literals::string_literals;
 #include <iostream>
+#include <optional>
 
 std::string GetModuleName(const HMODULE module);
 fs::path GetModulePath(std::string name);
@@ -30,7 +31,7 @@ inline std::string ctrim(std::string s, const char* t = whitespace) { return ltr
 template <typename T>
 int strpos(const std::basic_string<T>& haystack, const std::basic_string<T>& needle, int offset = 0) {
     auto found = haystack.find(needle, offset);
-    return (found == std::string::npos) ? -1 : found;
+    return (found == std::string::npos) ? -1 : (int)found;
 }
 
 template <class T>
@@ -126,12 +127,23 @@ bool StringContains(const std::string& haystack, const std::string& needle, size
 
 #define PREG_MATCH_IGNORE_CASE (1 << 0)
 int preg_match_all(std::string pattern, std::string subject, std::vector<std::string>& matches, int flags = 0, int offset = 0);
+int sregex_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches = nullptr, int flags = 0);
 int preg_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches = nullptr, int flags = 0, int offset = 0);
 bool regex_match(const std::string& pattern, const std::string& subject, bool ignoreCase = 0);
 
+//!  * \brief preg_replace(const CharType* pattern, const CharType* replacement, const CharType* subject)
+template <typename CharType>
+std::basic_string<CharType> preg_replace(const CharType* pattern, const CharType* replacement, const CharType* subject) {
+    // https://stackoverflow.com/questions/23622622/c-regex-with-char-and-wchar-t/23623610#23623610
+    std::basic_regex<CharType> _pattern(pattern);
+    std::basic_string<CharType> _subject(subject);
+    return std::regex_replace(_subject, _pattern, replacement);
+}
+
 // https://stackoverflow.com/questions/22617209/regex-replace-with-callback-in-c11
 template <class BidirIt, class Traits, class CharT, class UnaryFunction>
-std::basic_string<CharT> regex_replace(BidirIt first, BidirIt last, const std::basic_regex<CharT, Traits>& re, UnaryFunction function) {
+std::basic_string<CharT> regex_replace(BidirIt first, BidirIt last, const std::basic_regex<CharT, Traits>& re,
+                                       UnaryFunction function) {
     std::basic_string<CharT> s;
 
     typename std::match_results<BidirIt>::difference_type positionOfLastMatch = 0;
@@ -168,6 +180,70 @@ std::string regex_replace(const std::string& s, const std::basic_regex<CharT, Tr
     return regex_replace(s.cbegin(), s.cend(), re, f);
 }
 
+//! \param options [ECMAScript|basic|extended|awk|grep|egrep] [icase] [nosubs] [optimize] [collate]
+std::string regex_search(const std::string& pattern, const std::string& subject, bool ignoreCase = {},
+                         std::regex_constants::syntax_option_type options = {});
+
+template <typename CharT>
+int64_t parseInt(const std::basic_string<CharT>& str, int base, int64_t defaultValue) {
+    std::size_t pos = -1;
+    try {
+        auto rv = std::stoll(str, &pos, base);
+        if (pos != str.length()) {
+            LOG_DEBUG(__FUNCTION__ ": pos != len (%llu, %llu) on %s", pos, str.length(), str.c_str());
+            return defaultValue;
+        }
+        return rv;
+    } catch (std::invalid_argument) {
+    } catch (std::out_of_range) {
+    }
+    return defaultValue;
+}
+
+template <typename T, typename R = uint64_t>
+R parseUint(const T& str, int base, R defaultValue) {
+    std::size_t pos = -1;
+    try {
+        auto rv = std::stoull(str, &pos, base);
+        if (pos != str.length()) {
+            LOG_DEBUG(__FUNCTION__ ": pos != len (%llu, %llu) on %s", pos, str.length(), str.c_str());
+            return defaultValue;
+        }
+        return rv;
+    } catch (std::invalid_argument) {
+    } catch (std::out_of_range) {
+    }
+    return defaultValue;
+}
+
+template <typename T, typename R = uint64_t>
+std::optional<R> parseUintOpt(const T& str, int base) {
+    std::size_t pos = -1;
+    try {
+        auto rv = std::stoull(str, &pos, base);
+        if (pos == str.length()) {
+            return rv;
+        }
+    } catch (std::invalid_argument) {
+    } catch (std::out_of_range) {
+    }
+    return std::nullopt;
+}
+
+template <typename T, typename R = uint64_t>
+std::optional<R> parseIntOpt(const T& str, int base) {
+    std::size_t pos = -1;
+    try {
+        auto rv = std::stoll(str, &pos, base);
+        if (pos == str.length()) {
+            return rv;
+        }
+    } catch (std::invalid_argument) {
+    } catch (std::out_of_range) {
+    }
+    return std::nullopt;
+}
+
 int64_t parseInt(const std::string& str, int base, int64_t defaultValue);
 int64_t parseInt(const std::string& str, int base = 10);
 int64_t parseInt(const std::wstring& str, int base = 10);
@@ -183,11 +259,27 @@ template <typename T>
 auto strtolower(std::basic_string<T> s) {
     return std::transform(s.begin(), s.end(), s.begin(), tolower), s;
 }
+std::optional<std::reference_wrapper<uintptr_t>> __Memory__internal__safeDereferenceInt64OptRef(uintptr_t address);
 
-uintptr_t get_base();
-DWORD get_size();
-uintptr_t get_end();
-uintptr_t get_base_socialclub();
+template <typename R = uintptr_t, typename T>
+typename std::add_lvalue_reference<R>::type safeDereferenceRef(T address) {
+    auto addr = (uintptr_t)address;
+    return *reinterpret_cast<typename std::add_pointer<R>::type>(addr);
+}
+
+template <typename R = uintptr_t, typename T>
+typename std::optional<std::reference_wrapper<R>> safeDereferenceOptRef(T address) {
+    auto addr = (uintptr_t)address;
+    if (auto ptr = __Memory__internal__safeDereferenceInt64OptRef(addr)) {
+        // return *reinterpret_cast<R*>(addr);
+        return safeDereferenceRef<R>(addr);
+    }
+    return std::nullopt;
+}
+
+std::optional<uint64_t> asQword(const std::string& arg, int default_base = 0);
+std::optional<uint32_t> asDword(const std::string& arg, int default_base = 0);
+std::optional<bool> asBool(const std::string& arg);
 
 class executable_meta {
 private:
@@ -226,7 +318,7 @@ public:
 
     Timer() : m_Time(clock::now()){}
 
-    [[nodiscard]] clock::duration GetElapsed() const { return clock::now() - m_Time; }
+                  [[nodiscard]] clock::duration GetElapsed() const { return clock::now() - m_Time; }
 
     void ShowElapsed() const {
         auto secondsSinceLaunch = std::chrono::duration_cast<std::chrono::seconds>(GetElapsed()).count();
@@ -234,7 +326,7 @@ public:
         int minutes             = secondsSinceLaunch / 60 % 60;
         int seconds             = secondsSinceLaunch % 60;
 
-        std::cout << "Time wasted: " << hours << " hours " << minutes << " minutes "
+        std::cout << "\nTime wasted: " << std::dec << hours << " hours " << minutes << " minutes "
                   << seconds << " seconds"
                   << "\n";
     }

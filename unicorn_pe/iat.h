@@ -56,4 +56,7 @@ typedef struct _rebuildiat_apis {
 	int thunk_rva;
 }rebuildiat_apis;
 
-using rebuildiat_dlls = std::unordered_map<std::string, rebuildiat_apis *>;
+using rebuildiat_dlls = std::unordered_map<std::string, rebuildiat_apis*>;
+
+IMAGE_OPTIONAL_HEADER* __fastcall Get_IMAGE_OPTIONAL_HEADER(IMAGE_FILE_HEADER* fheader);
+

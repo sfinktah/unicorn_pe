@@ -1,6 +1,5 @@
 #pragma once
-#include "lodash_common.h"
-#include "traits.h"
+#include "./lodash_common.h"
 
 namespace _ {
     namespace helper {

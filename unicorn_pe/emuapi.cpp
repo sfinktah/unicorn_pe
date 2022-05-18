@@ -17,6 +17,8 @@
 #include "ucpe.h"
 #include "emuapi.h"
 
+#define EMU_PROCESS_ID 1000
+
 extern std::ostream *outs;
 
 extern "C"
@@ -103,10 +105,18 @@ void EmuGetCurrentThreadId(uc_engine *uc, uint64_t address, uint32_t size, void 
 
 void EmuGetCurrentProcessId(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
 {
-	DWORD ProcessId = 1000;
+	DWORD ProcessId = EMU_PROCESS_ID;
 
 	auto err = uc_reg_write(uc, UC_X86_REG_EAX, &ProcessId);
 }
+
+void EmuGetCurrentProcess(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
+{
+	DWORD Process = -1;
+
+	auto err = uc_reg_write(uc, UC_X86_REG_EAX, &Process);
+}
+
 
 void EmuQueryPerformanceCounter(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
 {
@@ -455,6 +465,92 @@ void EmuExAllocatePool(uc_engine *uc, uint64_t address, uint32_t size, void *use
 	err = uc_reg_write(uc, UC_X86_REG_RAX, &alloc);
 }
 
+void EmuVirtualProtect(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
+{
+	PeEmulation *ctx = (PeEmulation *)user_data;
+
+	uint64_t rcx;
+	auto err = uc_reg_read(uc, UC_X86_REG_RDX, &rcx);
+
+	uint64_t rdx;
+	err = uc_reg_read(uc, UC_X86_REG_R8, &rdx);
+
+	uint32_t r8d;
+	err = uc_reg_read(uc, UC_X86_REG_R9D, &r8d);
+
+	uint64_t r9;
+	err = uc_reg_read(uc, UC_X86_REG_RSP, &r9);
+
+	NTSTATUS status;
+
+	uint64_t RequestAddress, BaseAddress, EndAddress;
+	uint32_t NumberOfBytes;
+
+	uc_mem_read(uc, rcx, &RequestAddress, sizeof(BaseAddress));
+	uc_mem_read(uc, rdx, &NumberOfBytes, sizeof(NumberOfBytes));
+
+	EndAddress = RequestAddress + NumberOfBytes - 1;
+	BaseAddress = PAGE_ALIGN(RequestAddress);
+	EndAddress = AlignSize(EndAddress, PAGE_SIZE);
+
+	int prot = 0;
+	uint64_t oldprot = 0;
+
+	if (r8d == PAGE_EXECUTE_READWRITE)
+		prot = UC_PROT_ALL;
+	else if (r8d == PAGE_EXECUTE_READ)
+		prot = (UC_PROT_READ | UC_PROT_EXEC);
+	else if (r8d == PAGE_READWRITE)
+		prot = (UC_PROT_READ | UC_PROT_WRITE);
+	else if (r8d == PAGE_READONLY)
+		prot = UC_PROT_READ;
+	else
+		status = STATUS_INVALID_PARAMETER;
+
+	if (prot != 0)
+	{
+		uc_mem_region *regions;
+		uint32_t count;
+		err = uc_mem_regions(uc, &regions, &count);
+
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			if (regions[i].begin <= BaseAddress && regions[i].end >= BaseAddress)
+			{
+				if (regions[i].perms == UC_PROT_ALL)
+					oldprot = PAGE_EXECUTE_READWRITE;
+				else if (regions[i].perms == (UC_PROT_READ | UC_PROT_EXEC))
+					oldprot = PAGE_EXECUTE_READ;
+				else if (regions[i].perms == (UC_PROT_READ | UC_PROT_WRITE))
+					oldprot = PAGE_READWRITE;
+				else if (regions[i].perms == UC_PROT_READ)
+					oldprot = PAGE_READONLY;
+
+				break;
+			}
+		}
+		uc_free(regions);
+
+		uc_mem_write(uc, r9, &oldprot, sizeof(oldprot));
+
+		err = uc_mem_protect(uc, BaseAddress, EndAddress - BaseAddress, prot);
+
+		if(err == UC_ERR_OK)
+			status = STATUS_SUCCESS;
+		else
+			status = STATUS_INVALID_PARAMETER;
+
+		*outs << "VirtualProtect at " << RequestAddress;
+		
+		std::stringstream region;
+		if (ctx->FindAddressInRegion(RequestAddress, region))
+			*outs << " (" << region.str() << ")";
+		*outs << ", size " << NumberOfBytes << " bytes, return " << std::hex << status << "\n";
+	}
+
+	uc_reg_write(uc, UC_X86_REG_EAX, &status);
+}
+
 void EmuNtProtectVirtualMemory(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
 {
 	PeEmulation *ctx = (PeEmulation *)user_data;
@@ -474,9 +570,9 @@ void EmuNtProtectVirtualMemory(uc_engine *uc, uint64_t address, uint32_t size, v
 	uint64_t rsp;
 	err = uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
 
-	uint64_t oldprot;
+	uint64_t r9;
 
-	uc_mem_read(uc, rsp + 5 * 8, &oldprot, sizeof(oldprot));
+	uc_mem_read(uc, rsp + 5 * 8, &r9, sizeof(r9));
 
 	NTSTATUS status;
 
@@ -516,20 +612,20 @@ void EmuNtProtectVirtualMemory(uc_engine *uc, uint64_t address, uint32_t size, v
 				if (regions[i].begin <= BaseAddress && regions[i].end >= BaseAddress)
 				{
 					if (regions[i].perms == UC_PROT_ALL)
-						oldprot = PAGE_EXECUTE_READWRITE;
+						r9 = PAGE_EXECUTE_READWRITE;
 					else if (regions[i].perms == (UC_PROT_READ | UC_PROT_EXEC))
-						oldprot = PAGE_EXECUTE_READ;
+						r9 = PAGE_EXECUTE_READ;
 					else if (regions[i].perms == (UC_PROT_READ | UC_PROT_WRITE))
-						oldprot = PAGE_READWRITE;
+						r9 = PAGE_READWRITE;
 					else if (regions[i].perms == UC_PROT_READ)
-						oldprot = PAGE_READONLY;
+						r9 = PAGE_READONLY;
 
 					break;
 				}
 			}
 			uc_free(regions);
 
-			uc_mem_write(uc, rsp + 5 * 8, &oldprot, sizeof(oldprot));
+			uc_mem_write(uc, rsp + 5 * 8, &r9, sizeof(r9));
 
 			err = uc_mem_protect(uc, BaseAddress, EndAddress - BaseAddress, prot);
 
@@ -553,6 +649,126 @@ void EmuNtProtectVirtualMemory(uc_engine *uc, uint64_t address, uint32_t size, v
 
 	uc_reg_write(uc, UC_X86_REG_EAX, &status);
 }
+
+SIZE_T BaseVirtualQueryEx(uc_engine* uc, uint64_t address, uint32_t size, void* user_data,
+                          uintptr_t hProcess,
+                          LPCVOID lpAddress,
+                          PMEMORY_BASIC_INFORMATION lpBuffer,
+                          SIZE_T dwLength) {
+
+    PeEmulation* ctx = (PeEmulation*)user_data;
+
+	NTSTATUS status = STATUS_SUCCESS;
+
+	if (hProcess == (uint64_t)-1)
+	{
+		uint64_t RequestAddress, BaseAddress;
+
+		RequestAddress = (uint64_t)lpAddress;
+		BaseAddress = PAGE_ALIGN(RequestAddress);
+
+		int prot = 0;
+
+			uc_mem_region* regions;
+        uint32_t count;
+        auto err = uc_mem_regions(uc, &regions, &count);
+
+        for (uint32_t i = 0; i < count; ++i) {
+            if (regions[i].begin <= BaseAddress && regions[i].end >= BaseAddress) {
+                if (regions[i].perms == UC_PROT_ALL)
+                    prot = PAGE_EXECUTE_READWRITE;
+                else if (regions[i].perms == (UC_PROT_READ | UC_PROT_EXEC))
+                    prot = PAGE_EXECUTE_READ;
+                else if (regions[i].perms == (UC_PROT_READ | UC_PROT_WRITE))
+                    prot = PAGE_READWRITE;
+                else if (regions[i].perms == UC_PROT_READ)
+                    prot = PAGE_READONLY;
+                lpBuffer->Protect = prot;
+                break;
+            }
+        }
+        uc_free(regions);
+
+        *outs << "BaseVirtualQueryEx at " << RequestAddress;
+
+        std::stringstream region;
+        if (ctx->FindAddressInRegion(RequestAddress, region))
+            *outs << " (" << region.str() << ")";
+        *outs << ", protect " << std::hex << prot << "\n";
+	}
+	else
+	{
+		status = STATUS_INVALID_HANDLE;
+	}
+
+	return sizeof(MEMORY_BASIC_INFORMATION);
+}
+
+void EmuVirtualQueryEx(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
+{
+	PeEmulation *ctx = (PeEmulation *)user_data;
+	//SIZE_T VirtualQueryEx(
+	//  [in]           HANDLE                    hProcess,
+	//  [in, optional] LPCVOID                   lpAddress,
+	//  [out]          PMEMORY_BASIC_INFORMATION lpBuffer,
+	//  [in]           SIZE_T                    dwLength
+	//);
+	uint64_t rcx;
+	auto err = uc_reg_read(uc, UC_X86_REG_RCX, &rcx);
+
+	uint64_t rdx;
+	err = uc_reg_read(uc, UC_X86_REG_RDX, &rdx);
+
+	uint64_t r8;
+	err = uc_reg_read(uc, UC_X86_REG_R8, &r8);
+
+	uint64_t r9;
+	err = uc_reg_read(uc, UC_X86_REG_R9, &r9);
+
+	uint64_t rax;
+    rax = BaseVirtualQueryEx(uc, address, size, user_data, rcx, (void*)rdx, (PMEMORY_BASIC_INFORMATION)r8, r9);
+
+	uc_reg_write(uc, UC_X86_REG_EAX, &rax);
+}
+
+void EmuVirtualQuery(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
+{
+	PeEmulation *ctx = (PeEmulation *)user_data;
+	//SIZE_T VirtualQuery(
+	//  [in, optional] LPCVOID                   lpAddress,
+	//  [out]          PMEMORY_BASIC_INFORMATION lpBuffer,
+	//  [in]           SIZE_T                    dwLength
+	//);
+	uint64_t rcx;
+	auto err = uc_reg_read(uc, UC_X86_REG_RCX, &rcx);
+
+	uint64_t rdx;
+	err = uc_reg_read(uc, UC_X86_REG_RDX, &rdx);
+
+	uint64_t r8;
+	err = uc_reg_read(uc, UC_X86_REG_R8, &r8);
+
+	uint64_t rax;
+    rax = BaseVirtualQueryEx(uc, address, size, user_data, -1, (void*)rcx, (PMEMORY_BASIC_INFORMATION)rdx, r8);
+
+	uc_reg_write(uc, UC_X86_REG_EAX, &rax);
+}
+
+
+
+void EmuGetSystemInfo(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
+{
+	PeEmulation *ctx = (PeEmulation *)user_data;
+
+	LPSYSTEM_INFO lpSystemInfo;
+	auto err = uc_reg_read(uc, UC_X86_REG_RCX, &lpSystemInfo);
+
+	// lpSystemInfo->dwPageSize = 4096;
+		GetSystemInfo(lpSystemInfo);
+    auto rax = (uint64_t)0;
+	uc_reg_write(uc, UC_X86_REG_RAX, &rax);
+}
+
 
 void EmuNtQuerySystemInformation(uc_engine *uc, uint64_t address, uint32_t size, void *user_data)
 {

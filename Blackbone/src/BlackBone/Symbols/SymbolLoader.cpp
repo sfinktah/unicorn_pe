@@ -42,14 +42,14 @@ NTSTATUS SymbolLoader::Load( SymbolData& result )
 
     if (_x86OS)
     {
-        ntdll32.Load( std::wstring( windir + L"\\System32\\ntdll.dll" ), true );
+        ntdll32.Load( std::wstring( windir + L"\\System32\\ntdll.dll" ), true, nullptr );
     }
     else
     {
         FsRedirector fsr( _wow64Process );
 
-        ntdll64.Load( std::wstring( windir + L"\\System32\\ntdll.dll" ), true );
-        ntdll32.Load( std::wstring( windir + L"\\SysWOW64\\ntdll.dll" ), true );       
+        ntdll64.Load( std::wstring( windir + L"\\System32\\ntdll.dll" ), true, nullptr );
+        ntdll32.Load( std::wstring( windir + L"\\SysWOW64\\ntdll.dll" ), true, nullptr );       
     }
 
     HRESULT hr = sym32.Init( ntdll32.path(), ntdll32.imageBase() );

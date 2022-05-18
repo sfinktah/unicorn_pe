@@ -42,6 +42,15 @@
     <ClCompile Include="Logger.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="CircularBuffer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="FuncTailInsn.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="multimatch.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nativestructs.h">
@@ -63,6 +72,15 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="membricksafe.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="CircularBuffer.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="FuncTailInsn.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="multimatch.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

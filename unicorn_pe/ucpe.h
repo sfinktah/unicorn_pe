@@ -4,6 +4,14 @@ using api_emu_callback = std::function<bool(uc_engine *uc)>;
 
 using disasm_callback = std::function<bool(cs_insn *inst, uint64_t pAddress, size_t instLen, int instCount)>;
 
+IMAGE_OPTIONAL_HEADER* __fastcall Get_IMAGE_OPTIONAL_HEADER(IMAGE_FILE_HEADER* fheader);
+IMAGE_FILE_HEADER* __fastcall Get_IMAGE_FILE_HEADER(IMAGE_DOS_HEADER* ImageBase);
+
+struct s_segment {
+    uintptr_t ptr;
+    size_t size;
+};
+
 typedef struct UCPE_CacheFile_s
 {
 	ULONG ImageSize;
@@ -88,7 +96,7 @@ public:
 	PeEmulation()
 	{
 		m_BoundCheck = false;
-		m_DisplayDisasm = false;
+		m_Disassemble = false;
 		m_IsKernel = false;
 		m_IsWin64 = true;
 		m_IsPacked = false;
@@ -162,8 +170,12 @@ public:
 	NTSTATUS LdrLoadDllByName(const std::wstring &DllName, ULONG64 *ImageBase, ULONG *ImageSize);
 
 	bool RebuildSection(PVOID ImageBase, ULONG ImageSize, virtual_buffer_t &RebuildSectionBuffer);
+    bool AlignSectionHeaders(PVOID ImageBase, ULONG ImageSize);
 
-	void DisasmFunction(ULONG64 FunctionBegin, ULONG64 FunctionEnd, const disasm_callback &callback);
+	void DisasmFunction(ULONG64 FunctionBegin, ULONG64 FunctionEnd, const disasm_callback& callback);
+
+    static DWORD RebuildSectionSizes(PVOID ImageBase, ULONG ImageSize);
+
 
 	ULONG64 HeapAlloc(ULONG Bytes, bool IsPageAlign = false);
 	bool HeapFree(ULONG64 FreeAddress);
@@ -250,7 +262,7 @@ public:
 	uc_engine *m_uc;
 	bool m_IsWin64;
 	bool m_IsKernel;
-	bool m_DisplayDisasm;
+	bool m_Disassemble;
 	bool m_IsPacked;
 	bool m_BoundCheck;
 	bool m_Dump;
@@ -258,6 +270,8 @@ public:
 	bool m_HasCache;
 	bool m_FindChecks;
 	bool m_Bitmap;
+	bool m_History;
+	bool m_SkipSecondCall;;
 
 	uint64_t m_KSharedUserDataBase;
 	uint64_t m_KSharedUserDataEnd;
@@ -312,6 +326,7 @@ public:
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Written;
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Read;
 	std::vector<bool> m_WrittenBitmap;
+	std::vector<uintptr_t> m_StartAddresses;
 };
 
 extern PeEmulation g_ctx;
@@ -326,6 +341,8 @@ void* uc_memset( uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size);
 #define API_FUNCTION_SIZE 8
 #define PAGE_SIZE 0x1000
 #define PAGE_ALIGN(Va) (ULONG_PTR)(Va) & ~(PAGE_SIZE - 1)
+#define PAGE_ALIGN_UP(Va) ((ULONG_PTR)(Va) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
+#define PAGE_ALIGN_UP_MIN1(Va) (((ULONG_PTR)(Va) ? (ULONG_PTR)(Va) : 1) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
 #define PAGE_ALIGN_64(Va) (Va) & ~(0x1000ull - 1)
 #define PAGE_ALIGN_64k(Va) ((Va)) & ~(0x10000ull - 1)
 

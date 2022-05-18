@@ -175,21 +175,27 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="CircularBuffer.cpp" />
     <ClCompile Include="emuapi.cpp" />
     <ClCompile Include="buffer.cpp" />
     <ClCompile Include="encode.cpp" />
     <ClCompile Include="except.cpp" />
     <ClCompile Include="Filesystem.cpp" />
+    <ClCompile Include="FuncTailInsn.cpp" />
     <ClCompile Include="iat.cpp" />
     <ClCompile Include="Logger.cpp" />
+    <ClCompile Include="multimatch.cpp" />
     <ClCompile Include="unicorn_pe.cpp" />
     <ClCompile Include="util.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CircularBuffer.h" />
     <ClInclude Include="emuapi.h" />
+    <ClInclude Include="FuncTailInsn.h" />
     <ClInclude Include="iat.h" />
     <ClInclude Include="joaat.h" />
     <ClInclude Include="membricksafe.hpp" />
+    <ClInclude Include="multimatch.h" />
     <ClInclude Include="nativestructs.h" />
     <ClInclude Include="ucpe.h" />
     <ClInclude Include="util.hpp" />

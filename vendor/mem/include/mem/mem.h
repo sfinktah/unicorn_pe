@@ -61,7 +61,7 @@ namespace mem
         pointer rip(std::size_t offset) const noexcept;
 #endif // MEM_ARCH_X86_64
 
-        pointer& deref() const noexcept;
+        constexpr pointer deref() const noexcept;
 
         constexpr pointer operator+(std::size_t count) const noexcept;
         constexpr pointer operator-(std::size_t count) const noexcept;
@@ -164,7 +164,7 @@ namespace mem
 
         constexpr region sub_region(pointer address) const noexcept;
 
-		constexpr pointer adjust_base(pointer base, pointer address) const noexcept;
+        constexpr pointer adjust_base(pointer base, pointer address) const noexcept;
     };
 
     template <typename T>
@@ -235,10 +235,18 @@ namespace mem
     }
 #endif // MEM_ARCH_X86_64
 
-    MEM_STRONG_INLINE pointer& pointer::deref() const noexcept
+    //MEM_STRONG_INLINE pointer& pointer::deref() const noexcept
+    //{
+    //    return *reinterpret_cast<pointer*>(value_);
+    //}
+
+    MEM_STRONG_INLINE constexpr pointer pointer::deref() const noexcept
     {
-        return *reinterpret_cast<pointer*>(value_);
+        //return at(0);
+        return as<uintptr_t&>();
+        //return *reinterpret_cast<pointer*>(value_);
     }
+
 
     MEM_STRONG_INLINE constexpr pointer pointer::operator+(std::size_t count) const noexcept
     {
@@ -347,6 +355,8 @@ namespace mem
     {
         static_assert(
             std::is_same<typename std::make_unsigned<T>::type, std::uintptr_t>::value, "Invalid Integer Type");
+
+
 
         return static_cast<T>(value_);
     }

@@ -4,6 +4,7 @@
 #include <sstream>
 #include <functional>
 #include <thread>
+#include <optional>
 #include <windows.h>
 #include <utility>
 #include "util.hpp"
@@ -286,6 +287,21 @@ int preg_match_all(std::string pattern, std::string subject, std::vector<std::st
     return count;
 }
 
+#include <boost/config.hpp>
+//#include <boost/regex.hpp>
+#include <boost/xpressive/xpressive.hpp>
+namespace bre = boost::xpressive;
+int sregex_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches, int flags) {
+    bre::smatch sm;
+    bre::sregex re = bre::sregex::compile(pattern);
+    bool m         = bre::regex_search(subject, sm, re);
+    if (m && matches) {
+        for (auto i = 0; i < sm.size(); ++i)
+            matches->emplace_back(sm[i]);
+    }
+    return m;
+}
+
 // int preg_match ( string $pattern , string $subject [, array &$matches [, int $flags = 0 [, int $offset = 0 ]]] )
 int preg_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches, int flags,
                int offset) {
@@ -307,6 +323,7 @@ int preg_match(const std::string& pattern, const std::string& subject, std::vect
     }
     return result;
 }
+
 bool regex_match(const std::string& pattern, const std::string& subject, bool ignoreCase) {
     try {
         std::regex r(pattern, (std::regex_constants::syntax_option_type)(ignoreCase ? std::regex_constants::icase : 0));
@@ -315,6 +332,23 @@ bool regex_match(const std::string& pattern, const std::string& subject, bool ig
         LOG_FUNC("clearly we need better exception handling");
     }
     return false;
+}
+
+std::string regex_search(const std::string& pattern, const std::string& subject, bool ignoreCase,
+                         std::regex_constants::syntax_option_type options) {
+    try {
+        std::regex r(pattern, options | (std::regex_constants::syntax_option_type)(ignoreCase ? std::regex_constants::icase : 0));
+        std::smatch sm;
+        if (std::regex_search(subject, sm, r)) {
+            return sm.str(sm.size() - 1);
+            // return sm.str();
+        }
+    } catch (...) {
+        LOG_FUNC("clearly we need better exception handling");
+        return "";
+    }
+
+    return "";
 }
 
 int64_t parseInt(const std::string& str, int base, int64_t defaultValue) {
@@ -421,24 +455,114 @@ fs::path spread_filename(fs::path path) {
         uint32_t part = hash & (64 - 1);
         hash >>= 6;
         subdirs.emplace_back(fmt::format("{:02}", part));
-	}
+    }
     auto dstpath = os::path::join(dn, os::path::join(subdirs));
     return os::path::join(dstpath, bn);
 }
 
 void make_spread_folders(fs::path path) {
     if (fs::is_directory(path)) {
-        for (int i=0; i<64; ++i) {
+        for (int i = 0; i < 64; ++i) {
             auto path1 = path / fmt::format("{:02}", i);
             if (!fs::is_directory(path1)) {
                 fs::create_directory(path1);
-			}
-            for (int j=0; j<64; ++j) {
+            }
+            for (int j = 0; j < 64; ++j) {
                 auto path2 = path1 / fmt::format("{:02}", j);
-				if (!fs::is_directory(path2)) {
-					fs::create_directory(path2);
-				}
-			}
-		}
-	}
+                if (!fs::is_directory(path2)) {
+                    fs::create_directory(path2);
+                }
+            }
+        }
+    }
+}
+
+std::optional<uint64_t> asQword(const std::string& arg, int default_base) {
+    uint64_t value = 0;
+    std::optional<uint64_t> opt_value;
+    int dereference        = 0;
+    int offset_dereference = 0;
+
+    auto haystack = arg;
+    while (haystack[0] == '*') {
+        dereference++;
+        haystack = haystack.substr(1);
+    }
+
+    std::string _offset;
+    uint64_t offset = 0;
+    bool use_offset = {};
+    if (~strpos(haystack, "+") && ~string_between_swap("+", "", haystack, _offset, STRING_BETWEEN_INCLUSIVE)) {
+        _offset = _offset.substr(1);
+        while (_offset[0] == '*') {
+            offset_dereference++;
+            _offset = _offset.substr(1);
+        }
+        if (auto o = asQword(_offset)) {
+            offset     = *o;
+            use_offset = true;
+        }
+    }
+
+    if (auto match = regex_search(R"(^-((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
+        opt_value = parseIntOpt(match, 16);
+    else if (auto match = regex_search(R"(^((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
+        opt_value = parseUintOpt(match, 16);
+    else if (auto match = regex_search("^[0-9a-fA-F]+(?=h)$", haystack); !match.empty())
+        opt_value = parseUintOpt(match, 16);
+    else if (auto match = regex_search(R"(^exe\+([0-9a-fA-F]+)$)", haystack); !match.empty())
+        opt_value = parseUintOpt(match, 16);
+    else
+        opt_value = parseUintOpt(match, default_base);
+
+    if (!opt_value)
+        return opt_value;
+    value = *opt_value;
+
+    if (dereference) {
+        while (dereference--) {
+            if (auto result = safeDereferenceOptRef(value))
+                value = *result;
+            else
+                return std::nullopt;
+        }
+    }
+    if (use_offset) {
+        value += offset;
+        while (offset_dereference--) {
+            if (auto result = safeDereferenceOptRef(value))
+                value = *result;
+            else
+                return std::nullopt;
+        }
+    }
+    return value;
+}
+
+std::optional<uint32_t> asDword(const std::string& arg, int default_base) {
+    if (auto o = asQword(arg, default_base)) {
+        return static_cast<uint32_t>(*o);
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> asBool(const std::string& rest) {
+    if (auto match = regex_search("^(1|enable|enabled|on|true|yes)$", rest, true); !match.empty()) return true;
+    if (auto match = regex_search("^(0|disable|disabled|off|false|no)$", rest, true); !match.empty()) return false;
+    return std::nullopt;
+}
+
+std::optional<std::reference_wrapper<uintptr_t>> __Memory__internal__safeDereferenceInt64OptRef(uintptr_t address) {
+    uintptr_t* p = reinterpret_cast<uintptr_t*>(address);
+    static void* exceptionAddress;
+
+    __try {
+        auto& value = *p;
+        return value;
+        // std::optional<std::reference_wrapper<uintptr_t>>{value}
+    } __except (exceptionAddress = (GetExceptionInformation())->ExceptionRecord->ExceptionAddress, EXCEPTION_EXECUTE_HANDLER) {
+        // LOG_DEBUG("safeDereference: exception reading pointer at %p", (void*)p);
+    }
+
+    return std::nullopt;
 }

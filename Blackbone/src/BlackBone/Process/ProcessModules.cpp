@@ -415,7 +415,7 @@ call_result_t<ModuleDataPtr> ProcessModules::Inject( const std::wstring& path, T
     uint32_t ustrSize = 0;
     ptr_t res = 0;    
 
-    img.Load( path, true );
+    img.Load( path, true, nullptr );
     img.Release();
 
     // Already loaded

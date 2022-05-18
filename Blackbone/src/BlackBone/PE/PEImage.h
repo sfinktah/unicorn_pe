@@ -20,9 +20,11 @@
 
 namespace blackbone
 {
-
 namespace pe
 {
+	class PEImage;
+	using PreMapCallback = uintptr_t( *)(int type, PEImage& peImage, const void* data);
+
 
 enum AddressType
 {
@@ -88,6 +90,7 @@ using vecExports  = std::vector<ExportData>;
 /// </summary>
 class PEImage
 {
+public:
     using PCHDR32 = const IMAGE_NT_HEADERS32*;
     using PCHDR64 = const IMAGE_NT_HEADERS64*;
     
@@ -101,7 +104,7 @@ public:
     /// <param name="path">File path</param>
     /// <param name="skipActx">If true - do not initialize activation context</param>
     /// <returns>Status code</returns>
-    BLACKBONE_API NTSTATUS Load( const std::wstring& path, bool skipActx = false );
+    BLACKBONE_API NTSTATUS Load( const std::wstring& path, bool skipActx = false, PreMapCallback ldrCallback = nullptr );
 
     /// <summary>
     /// Load image from memory location
@@ -122,13 +125,14 @@ public:
     /// Release mapping, if any
     /// </summary>
     /// <param name="temporary">Preserve file paths for file reopening</param>
-    BLACKBONE_API void Release( bool temporary = false );
+    BLACKBONE_API void Release(bool temporary = false);
+
 
     /// <summary>
     /// Parses PE image
     /// </summary>
     /// <returns>Status code</returns>
-    BLACKBONE_API NTSTATUS Parse( void* pImageBase = nullptr );
+    BLACKBONE_API NTSTATUS Parse(void* pImageBase = nullptr, PreMapCallback ldrCallback = nullptr);
 
     /// <summary>
     /// Processes image imports
@@ -315,7 +319,7 @@ private:
     /// <returns>Manifest data</returns>
     void* GetManifest( uint32_t& size, int32_t& manifestID );
 
-private:
+public:
     FileHandle  _hFile;                         // Target file HANDLE
     Handle      _hMapping;                      // Memory mapping object
     void*       _pFileBase = nullptr;           // Mapping base

@@ -90,20 +90,24 @@ namespace _ {
      *
      * _.chunk(['a', 'b', 'c', 'd'], 3);
      * // => [['a', 'b', 'c'], ['d']]
+	 *
+     * auto patterns = _::chunk(list, 2, -1);
+	 * auto pattern_iter = patterns.begin();
+	 * do {
+	 *     auto [pattern, peek] = *pattern_iter++;
+     * } while (pattern.size());
+	 *
+	 * Python>[x for x in stutter_chunk(['a', 'b', 'c', 'd'], 2, 1)]
+ 	 * [['a', 'b'], ['b', 'c'], ['c', 'd'], ['d', None]]
      */
-    template <typename Container, typename ResultValueType = typename Container::value_type>
-    auto chunk(const Container& array, size_t size = std::numeric_limits<size_t>::max(), int step = 0) {
-        using result_t = std::vector<std::vector<ResultValueType>>;
-        result_t result;
-        auto length = array.size();
-        if (!length || !size) {
-            return result;
-        }
-        size_t index = 0, result_count = length / size;
-        result.reserve(result_count);
+    template <typename T, typename R = typename T::value_type>
+    auto chunk(const T& list, size_t chunk_size, int step = 0) {
+        std::vector<std::vector<R>> result;
+        size_t length = list.chunk_size();
+        size_t index = 0, result_count = length / chunk_size;
         while (index < length) {
-            result.emplace_back(baseSlice<std::vector<ResultValueType>>(array, index, index + size));
-            index += size + step;
+            result.emplace_back(baseSlice<std::vector<R>>(list, index, index + chunk_size));
+            index += chunk_size + step;
         }
         return result;
     }

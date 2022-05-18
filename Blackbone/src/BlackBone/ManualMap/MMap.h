@@ -162,6 +162,7 @@ struct ImageContext
     eLoadFlags     flags = NoFlags;         // Image loader flags
 	ptr_t          forceMapTo = 0;				//force map to
     bool           initialized = false;     // Image entry point was called
+	blackbone::pe::PreMapCallback preMapCallback = nullptr;
 };
 
 using ImageContextPtr = std::shared_ptr<ImageContext>;
@@ -190,7 +191,8 @@ public:
         MapCallback mapCallback = nullptr,
         void* context = nullptr,
         CustomArgs_t* pCustomArgs_t = nullptr,
-		ptr_t forceMapToAddr = 0
+		ptr_t forceMapToAddr = 0,
+        ::blackbone::pe::PreMapCallback PreMapCallback = nullptr
         );
 
     /// <summary>
@@ -210,7 +212,8 @@ public:
         MapCallback mapCallback = nullptr,
         void* context = nullptr,
         CustomArgs_t* pCustomArgs_t = nullptr,
-		ptr_t forceMapToAddr = 0
+		ptr_t forceMapToAddr = 0,
+		::blackbone::pe::PreMapCallback preMapCallback = nullptr
         );
 
     /// <summary>
@@ -249,7 +252,8 @@ private:
         MapCallback ldrCallback = nullptr,
         void* ldrContext = nullptr,
         CustomArgs_t* pCustomArgs_t = nullptr,
-		ptr_t forceMapToAddr = 0
+		ptr_t forceMapToAddr = 0,
+        ::blackbone::pe::PreMapCallback PreMapCallback = nullptr
         );
  
     /// <summary>
@@ -270,7 +274,9 @@ private:
         const std::wstring& path,
         void* buffer, size_t size, bool asImage,
         eLoadFlags flags = NoFlags,
-		ptr_t forceMapToAddr = 0
+		ptr_t forceMapToAddr = 0,
+        ::blackbone::pe::PreMapCallback preMapCallback = nullptr
+
         );
 
     /// <summary>
@@ -399,6 +405,7 @@ private:
     vecImageCtx     _images;                // Mapped images
     MemBlock        _pAContext;             // SxS activation context memory address
     MapCallback     _mapCallback = nullptr; // Loader callback for adding image into loader lists
+    ::blackbone::pe::PreMapCallback  _preMapCallback = nullptr; // Loader callback for adding image into loader lists
     void*           _userContext = nullptr; // user context for _ldrCallback       
 
     std::vector<std::pair<ptr_t, size_t>> _usedBlocks;   // Used memory blocks 

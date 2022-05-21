@@ -87,6 +87,7 @@ int __fastcall CheckSegmentLengths(char* ImageBase, s_segment* segment_offsets) 
     }
     return 0;
 }
+
 void PeEmulation::DisasmFunction(ULONG64 FunctionBegin, ULONG64 FunctionEnd, const disasm_callback& callback) {
     crt_buffer_t buf;
 

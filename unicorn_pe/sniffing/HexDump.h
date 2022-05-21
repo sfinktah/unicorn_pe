@@ -113,7 +113,7 @@ namespace HexDump {
 	void dumpBytesAsText(OutputStream& output, const ByteSequence& bytes)
 	{
         for (auto byte : bytes)
-			output << (isprint(byte) ? byte : '.');
+			output << (isprint((int)(uint8_t)byte) ? byte : '.');
 	}
 
 	// Dump a sequence of bytes in side-by-side hex and text formats

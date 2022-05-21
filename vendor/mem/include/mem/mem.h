@@ -25,6 +25,7 @@
 #include <cstring>
 #include <type_traits>
 #include <utility>
+#include <array>
 
 namespace mem
 {
@@ -113,13 +114,53 @@ namespace mem
         typename std::enable_if<!std::is_reference<T>::value, typename std::add_lvalue_reference<T>::type>::type
         rcast() & noexcept;
 
-        template <typename Func>
-        constexpr pointer and_then(Func&& func) const;
+        template <typename Container>
+        constexpr pointer put_bytes(const Container& obj) const noexcept {
+            using value_t = typename Container::value_type;
+            constexpr auto size_e  = sizeof(value_t);
+            region(*this, size_e * obj.size()).copy(obj.data());
+            return *this;
+        }
 
         template <typename Func>
-        constexpr pointer or_else(Func&& func) const;
+        constexpr std::enable_if_t<std::is_void_v<std::invoke_result_t<Func>>, pointer> 
+        or_else(Func&& func) const
+        {
+            if (!value_) 
+                std::forward<Func>(func)();
+            return *this;
+        }
+
+        template <typename Func>
+        constexpr std::enable_if_t<!std::is_void_v<std::invoke_result_t<Func>>, pointer> 
+        or_else(Func&& func) const
+        {
+            if (!value_) 
+                return std::forward<Func>(func)();
+            return *this;
+        }
+
+        template <typename Func>
+        constexpr std::enable_if_t<!std::is_void_v<std::invoke_result_t<Func, pointer>>, pointer> 
+        and_then(Func&& func) const
+        {
+            if (value_)
+                return std::forward<Func>(func)(*this);
+            return *this;
+        }
+
+        template <typename Func>
+        constexpr std::enable_if_t<std::is_void_v<std::invoke_result_t<Func, pointer>>, pointer> 
+        and_then(Func&& func) const
+        {
+            if (value_) 
+                std::forward<Func>(func)(*this);
+            return *this;
+        }
+
 
         constexpr any_pointer any() const noexcept;
+
     };
 
     static_assert((sizeof(pointer) == sizeof(void*)) && (alignof(pointer) == alignof(void*)), "Hmm...");
@@ -141,6 +182,53 @@ namespace mem
     class region
     {
     public:
+		// iterator class is parametrized by pointer type
+		template <typename PointerType, typename T = pointer>
+		class region_iterator {
+		public:
+			friend region;
+
+			region_iterator& operator++() {
+				start += 1;
+				return *this;
+			}
+
+			region_iterator operator++(int) {
+				start += 1;
+				return region_iterator(start - 1, end);
+			}
+
+			bool operator==(const region_iterator& other) const {
+				return (start == other.start && end == other.end) ||
+					(ended() && other.ended());
+			}
+			bool operator!=(const region_iterator& other) const {
+				return !(*this == other);
+			}
+			T operator*() const {
+				return start;
+			}
+
+		private:
+			region_iterator(T end) : start(end), end(end) { }
+			region_iterator(T start, T end) : start(start), end(end) { }
+			bool ended() const {
+				return start >= end;
+			}
+
+			T start;
+			T end;
+		};
+
+		typedef region_iterator<pointer*> iterator;
+		typedef region_iterator<const pointer*> const_iterator;
+
+		iterator                                       begin() { return iterator(start.as<std::uintptr_t>(), start.as<std::uintptr_t>() + size); }
+		iterator                                       end() { return iterator(start.as<std::uintptr_t>() + size); }
+
+		const_iterator                                 cbegin() { return const_iterator(start.as<std::uintptr_t>(), start.as<std::uintptr_t>() + size); }
+		const_iterator                                 cend() { return const_iterator(start.as<std::uintptr_t>() + size); }
+
         pointer start {nullptr};
         std::size_t size {0};
 
@@ -246,6 +334,7 @@ namespace mem
         return as<uintptr_t&>();
         //return *reinterpret_cast<pointer*>(value_);
     }
+
 
 
     MEM_STRONG_INLINE constexpr pointer pointer::operator+(std::size_t count) const noexcept
@@ -403,17 +492,11 @@ namespace mem
         return *reinterpret_cast<typename std::add_pointer<T>::type>(this);
     }
 
-    template <typename Func>
-    MEM_STRONG_INLINE constexpr pointer pointer::and_then(Func&& func) const
-    {
-        return value_ ? std::forward<Func>(func)(*this) : nullptr;
-    }
+//ALWAYS_INLINE std::enable_if_t<!std::is_void_v<result_of_t<_Fn(Args...)>>, result_of_t<_Fn(Args...)>> removeTailCall(_Fn fn, Args&&... args) {
+//template <typename _Fn, typename... Args>
+//ALWAYS_INLINE std::enable_if_t<std::is_void_v<result_of_t<_Fn(Args...)>>> removeTailCall(_Fn fn, Args&&... args) {
+//    fn(std::forward<Args>(args)...);
 
-    template <typename Func>
-    MEM_STRONG_INLINE constexpr pointer pointer::or_else(Func&& func) const
-    {
-        return value_ ? *this : std::forward<Func>(func)();
-    }
 
     MEM_STRONG_INLINE constexpr any_pointer pointer::any() const noexcept
     {

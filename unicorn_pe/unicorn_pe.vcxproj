@@ -131,6 +131,9 @@
       <AdditionalLibraryDirectories>..\unicorn\msvc\x64\Debug;..\Blackbone\build\x64\Debug;..\capstone\msvc\x64\Debug;..\x64\Debug;..\build\x64\Debug</AdditionalLibraryDirectories>
       <AdditionalDependencies>unicorn_static.lib;BlackBone.lib;capstone.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PreBuildEvent>
+      <Command>del $(TargetPath)</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -172,7 +175,11 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>..\unicorn\msvc\x64\Release;..\capstone\msvc\x64\Release;..\x64\Release;..\build\x64\Release;$(VcpkgCurrentInstalledDir)lib</AdditionalLibraryDirectories>
       <AdditionalDependencies>unicorn_static.lib;BlackBone.lib;capstone.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <OutputFile>$(OutDir)$(TargetName)X$(TargetExt)</OutputFile>
     </Link>
+    <PreBuildEvent>
+      <Command>del $(TargetPath)</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="CircularBuffer.cpp" />
@@ -199,6 +206,7 @@
     <ClInclude Include="nativestructs.h" />
     <ClInclude Include="ucpe.h" />
     <ClInclude Include="util.hpp" />
+    <ClInclude Include="xrange.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

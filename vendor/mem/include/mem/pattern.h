@@ -43,6 +43,8 @@ namespace mem
         bool parse_chunk(char_queue& input, char wildcard);
 
     public:
+        using value_type = byte;
+
         explicit pattern() = default;
 
         enum class wildcard_t : char
@@ -69,6 +71,7 @@ namespace mem
         explicit operator bool() const noexcept;
 
         std::string to_string() const;
+		const byte* data() const noexcept;
     };
 
     mem::pointer scan(const mem::pattern& pattern, mem::region range);
@@ -319,6 +322,11 @@ namespace mem
     MEM_STRONG_INLINE std::size_t pattern::size() const noexcept
     {
         return bytes_.size();
+    }
+
+    MEM_STRONG_INLINE const byte* pattern::data() const noexcept
+    {
+        return !bytes_.empty() ? bytes_.data() : nullptr;
     }
 
     MEM_STRONG_INLINE std::size_t pattern::trimmed_size() const noexcept

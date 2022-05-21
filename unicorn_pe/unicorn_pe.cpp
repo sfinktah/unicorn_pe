@@ -16,6 +16,11 @@
 #include <boost/config.hpp>
 #include <boost/circular_buffer.hpp>
 
+#include <fmt/format.h>
+#include <pystring/pystring.h>
+#include "sniffing/nowide/convert.hpp"
+using namespace nowide;
+
 #include "buffer.h"
 #include "encode.h"
 #include "nativestructs.h"
@@ -25,12 +30,9 @@
 
 // #include <curl/curl.h>
 //#include <restclient-cpp/restclient.h>
+#include "Filesystem.hpp"
 #include "FuncTailInsn.h"
 #include "util.hpp"
-#include <pystring/pystring.h>
-#include <fmt/format.h>
-#include "sniffing/nowide/convert.hpp"
-using namespace nowide;
 
 #include "./argh.h"
 #include "../vendor/mem/include/mem/mem.h"
@@ -58,6 +60,10 @@ std::forward_list<PATCH_ENTRY> membricksafe::g_patches;
 #pragma comment(lib, "Crypt32.Lib")
 std::ostream* outs;
 
+#define LOG_ADDR_N(X) *outs << #X << ": " << std::hex << normalise_base(X.as<uintptr_t>()) << std::dec << std::endl
+#define LOG_ADDR(X) *outs << #X << ": " << std::hex << X.as<uintptr_t>() << std::dec << std::endl
+//#define LOG(X, ...) (*outs << fmt::format((X), ##__VA_ARGS__) << "\n")
+
 extern "C" {
 NTSYSAPI
 PIMAGE_NT_HEADERS
@@ -74,6 +80,7 @@ RtlImageDirectoryEntryToData(
     PULONG Size);
 }
 
+void* patch_nops(void* ptr, size_t count);
 uint64_t EmuReadReturnAddress(uc_engine* uc);
 bool EmuReadNullTermUnicodeString(uc_engine* uc, uint64_t address, std::wstring& str);
 bool EmuReadNullTermString(uc_engine* uc, uint64_t address, std::string& str);
@@ -87,12 +94,52 @@ template <typename Container>
 uc_err uc_mem_write(uc_engine* uc, uint64_t address, const Container& obj) {
     using value_t = typename Container::value_type;
     using size_e  = sizeof value_t;
-    return uc_mem_write(uc, uint64_t address, std::data(obj), size_e & std::size(obj));
+    return uc_mem_write(uc, uint64_t address, std::data(obj), size_e * std::size(obj));
 }
 
 uintptr_t PreManualMapCallback(int type, blackbone::pe::PEImage& peImage, const void* data) {
     if (type == 0) {
-        peImage._imgSize = PAGE_ALIGN_UP(peImage._imgSize);
+        auto ntheader = (PIMAGE_NT_HEADERS)RtlImageNtHeader(peImage._pFileBase);
+
+        DWORD SectionAlignment;
+
+        if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
+            auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
+            SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
+        } else {
+            SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
+        }
+
+        auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
+                                                     sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
+
+        auto correct_size = ntheader->OptionalHeader.BaseOfCode;
+
+        for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
+            auto SectionSize = (DWORD)ALIGN_UP_MIN1(
+                max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
+                SectionAlignment);
+
+            *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
+                                 SectionHeader[i].Name,
+                                 SectionHeader[i].Misc.VirtualSize,
+                                 SectionSize,
+                                 SectionHeader[i].VirtualAddress,
+                                 correct_size,
+                                 SectionHeader[i].SizeOfRawData,
+                                 SectionHeader[i].PointerToRawData)
+                  << "\n";
+
+            correct_size += SectionSize;
+        }
+
+        LOG("ImageBase: {:8x}", peImage._imgBase);
+        LOG("ImageSize: {:8x} [{:8x}]", peImage._imgSize, correct_size);
+
+        peImage._imgSize = correct_size; /*PAGE_ALIGN_UP(peImage._imgSize);*/
+                                         // disable DYNAMIC_BASE stop us rebase the image (even to it's original location)
+        //peImage._DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+
         //*outs << "SectionSize: " << std::hex << PeEmulation::RebuildSectionSizes(peImage._pFileBase, 0) << "\n";
         //auto hdr2 = peImage._pImageHdr64;
         //blackbone::pe::PEImage::PCHDR64 hdr = data;
@@ -136,8 +183,8 @@ blackbone::LoadData ManualMapCallback(blackbone::CallbackType type, void* contex
                                                     //tmpData.entryPoint = 0;
                                                     //tmpData.ldrPtr = 0;
                                                     //tmpData.imgPtr = pImage->imgMem.ptr();
-                                                    //ManualMapCallback: ImageCallback gta5 - original - 323.1 - cff.exe 0 3ed4000 0
-                                                    //ManualMapCallback: ImageCallback gta5-original-323.1.exe           0 3ed3c00 0
+                                                    //ManualMapCallback: ImageCallback xxx - original - 323.1 - cff.exe 0 3ed4000 0
+                                                    //ManualMapCallback: ImageCallback xxx-original-323.1.exe           0 3ed3c00 0
         //*outs << "ManualMapCallback: ImageCallback" << fmt::format("{} {:x} {:x} {:x}", narrow(modInfo.name), (ULONG64)modInfo.imgPtr, modInfo.size, modInfo.baseAddress)
         //      << "\n";
     }
@@ -163,6 +210,7 @@ bool PeEmulation::RegisterAPIEmulation(const std::wstring& DllName, const char* 
             for (size_t j = 0; j < m->FakeAPIs.size(); ++j) {
                 if (m->FakeAPIs[j].ProcedureName == ProcedureName) {
                     AddAPIEmulation(&m->FakeAPIs[j], callback, argsCount);
+                    LOG("registered API emulation for {} in {} at {:#x}", ProcedureName, narrow(m->DllName), m->FakeAPIs[j].VirtualAddress);
                     return true;
                 }
             }
@@ -170,13 +218,14 @@ bool PeEmulation::RegisterAPIEmulation(const std::wstring& DllName, const char* 
             return false;
         }
     }
+    LOG("failed to find DLL {} for API emulation of {}", narrow(DllName), ProcedureName);
     return false;
 }
 
-uintptr_t PeEmulation::NormaliseBase(ULONG64 address) const {
+uintptr_t PeEmulation::NormaliseBase(ULONG64 address, ULONG64 base) const {
     auto i = m_FakeModules.size() - 1;
     if (address >= m_FakeModules[i]->ImageBase && address < m_FakeModules[i]->ImageBase + m_FakeModules[i]->ImageSize) {
-        address = address - m_FakeModules[i]->ImageBase + 0x140000000;
+        address = address - m_FakeModules[i]->ImageBase + base;
     }
     return address;
 }
@@ -247,6 +296,24 @@ bool PeEmulation::FindAPIByAddress(ULONG64 address, std::wstring& DllName, FakeA
             break;
         }
     }
+
+    // well that shit didn't work, lets do it the old fashioned way
+
+    FakeAPI_t* r = NULL;
+    for (size_t i = 0; i < m_FakeModules.size(); ++i) {
+        auto& m = m_FakeModules[i];
+        for (size_t j = 0; j < m->FakeAPIs.size(); ++j) {
+            if (m->FakeAPIs[j].VirtualAddress == address) {
+                // AddAPIEmulation(&m->FakeAPIs[j], callback, argsCount);
+                // LOG("found call to {} in {} at {:#x}", m->FakeAPIs[j].ProcedureName, narrow(m->DllName), m->FakeAPIs[j].VirtualAddress);
+                *api    = &m->FakeAPIs[j];
+                DllName = m->DllName;
+                return true;
+            }
+        }
+        //*outs << "failed to find API emulation in " << narrow(m->DllName) << "\n";
+    }
+    // LOG("failed to find API emulation for {:#x}", address);
     return false;
 }
 
@@ -335,6 +402,7 @@ VOID PeEmulation::LdrResolveExportTable(FakeModule_t* module, PVOID ImageBase, U
             if (strForwardFunction) {
                 std::string strForwardDll(strForward, strForwardFunction - strForward);
                 strForwardDll += ".dll";
+                // LOG("{} fowards {} to {}", narrow(module->DllName), strFunction, strForwardDll);
                 ULONG64 ForwardDllBase = 0;
                 std::wstring wszForwardDll;
                 ANSIToUnicode(strForwardDll, wszForwardDll);
@@ -345,6 +413,7 @@ VOID PeEmulation::LdrResolveExportTable(FakeModule_t* module, PVOID ImageBase, U
                 }
             }
         } else {
+            // LOG("{} exports {}", narrow(module->DllName), strFunction);
             module->FakeAPIs.emplace_back(strFunction, MappedBase + functionRva);
         }
     }
@@ -398,17 +467,19 @@ NTSTATUS PeEmulation::LdrLoadDllByName(const std::wstring& DllName, ULONG64* Ima
     return STATUS_SUCCESS;
 }
 
+static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
+
 static void RwxCallback(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data);
 
 static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* user_data);
 
 void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBase, ULONG ImageSize, ULONG64 MappedBase, ULONG64 EntryPoint) {
-    // MapImageToEngine(gta5-original-323.1.exe,     1e58a010000, 3ed3c00, 140000000, 1415faff0
-    // MapImageToEngine(gta5-original-323.1-cff.exe, 26c21410000, 3ed4000, 140000000, 1415faff0
+    // MapImageToEngine(xxx-original-323.1.exe,     1e58a010000, 3ed3c00, 140000000, 1415faff0
+    // MapImageToEngine(xxx-original-323.1-cff.exe, 26c21410000, 3ed4000, 140000000, 1415faff0
     // 0xd4000 - 0xd3c00 = 0x400
-    // ManualMapCallback:gta5-original-323.1-cff.exe 26c21410000, 3ed4000, 140000000
+    // ManualMapCallback:xxx-original-323.1-cff.exe 26c21410000, 3ed4000, 140000000
 
-    //*outs << fmt::format("MapImageToEngine({}, {:x}, {:x}, {:x}, {:x}\n", narrow(ImageName), (uintptr_t)ImageBase, ImageSize, MappedBase, EntryPoint);
+    *outs << fmt::format("MapImageToEngine({}, {:x}, {:x}, {:x}, {:x}\n", narrow(ImageName), (uintptr_t)ImageBase, ImageSize, MappedBase, EntryPoint);
     FakeModule_t* mod = new FakeModule_t(MappedBase, ImageSize, EntryPoint, ImageName);
     //_DllCharacteristics = pImageHeader->OptionalHeader.DllCharacteristics;
 
@@ -440,7 +511,7 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
 
     bool isExe = false;
     if (pystring::endswith(narrow(ImageName), ".exe")) {
-        *outs << fmt::format("MappedBase: {:x}", image_base);
+        *outs << fmt::format("MappedBase: {:x}\n", image_base);
         isExe = true;
         virtual_buffer_t buf(ImageSize);
         memcpy(buf.GetBuffer(), ImageBase, ImageSize);
@@ -485,17 +556,17 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
     auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
                                                  sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
 
-    //gta5-original-323.1.exe          .text     1717c00     1000  1717c00      600
-    //gta5-original-323.1.exe          BINK          c00  1719000      c00  1718200
-    //gta5-original-323.1.exe          BINKBSS        60  171a000        0        0
-    //gta5-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
-    //gta5-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
-    //gta5-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
-    //gta5-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
-    //gta5-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
-    //gta5-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
-    //gta5-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
-    //gta5-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
+    //xxx-original-323.1.exe          .text     1717c00     1000  1717c00      600
+    //xxx-original-323.1.exe          BINK          c00  1719000      c00  1718200
+    //xxx-original-323.1.exe          BINKBSS        60  171a000        0        0
+    //xxx-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
+    //xxx-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
+    //xxx-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
+    //xxx-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
+    //xxx-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
+    //xxx-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
+    //xxx-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
+    //xxx-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
     //.text            VirtualSize  1717c00 ->  1718000
     //BINK             VirtualSize      c00 ->     1000
     //BINKBSS          VirtualSize       60 ->     1000
@@ -507,77 +578,72 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
     //.rsrc            VirtualSize    2de00 ->    2e000
     //.reloc           VirtualSize    d5600 ->    d6000
     //.text            VirtualSize  125cc00 ->  125d000
-    //gta5-original-323.1.exe          .text     1717c00     1000  1717c00      600
-    //gta5-original-323.1.exe          BINK          c00  1719000      c00  1718200
-    //gta5-original-323.1.exe          BINKBSS        60  171a000        0        0
-    //gta5-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
-    //gta5-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
-    //gta5-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
-    //gta5-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
-    //gta5-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
-    //gta5-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
-    //gta5-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
-    //gta5-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
+    //xxx-original-323.1.exe          .text     1717c00     1000  1717c00      600
+    //xxx-original-323.1.exe          BINK          c00  1719000      c00  1718200
+    //xxx-original-323.1.exe          BINKBSS        60  171a000        0        0
+    //xxx-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
+    //xxx-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
+    //xxx-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
+    //xxx-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
+    //xxx-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
+    //xxx-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
+    //xxx-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
+    //xxx-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
 
     //                                 Name      VirtualSize         VirtualAddresss     RawSize  RawAddr
-    //gta5-original-323.1-cff.exe      .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600 + 1717c00
-    //gta5-original-323.1-cff.exe      BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200 +    1e00 -.
-    //gta5-original-323.1-cff.exe      BINKBSS      1000 [    1000]  171a000 [ 171a000]     1000  171a000 -   -1200  '
-    //gta5-original-323.1-cff.exe      .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00 +     c00 -'
-    //gta5-original-323.1-cff.exe      .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
-    //gta5-original-323.1-cff.exe      .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
-    //gta5-original-323.1-cff.exe      .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
-    //gta5-original-323.1-cff.exe      BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
-    //gta5-original-323.1-cff.exe      .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
-    //gta5-original-323.1-cff.exe      .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
-    //gta5-original-323.1-cff.exe      .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
+    //xxx-original-323.1-cff.exe      .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600 + 1717c00
+    //xxx-original-323.1-cff.exe      BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200 +    1e00 -.
+    //xxx-original-323.1-cff.exe      BINKBSS      1000 [    1000]  171a000 [ 171a000]     1000  171a000 -   -1200  '
+    //xxx-original-323.1-cff.exe      .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00 +     c00 -'
+    //xxx-original-323.1-cff.exe      .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
+    //xxx-original-323.1-cff.exe      .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
+    //xxx-original-323.1-cff.exe      .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
+    //xxx-original-323.1-cff.exe      BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
+    //xxx-original-323.1-cff.exe      .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
+    //xxx-original-323.1-cff.exe      .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
+    //xxx-original-323.1-cff.exe      .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
 
-    //gta5-original-323.1.exe          .text     1717c00 [ 1718000]     1000 [    1000]  1717c00      600
-    //gta5-original-323.1.exe          BINK          c00 [    1000]  1719000 [ 1719000]      c00  1718200
-    //gta5-original-323.1.exe          BINKBSS        60 [    1000]  171a000 [ 171a000]        0        0
-    //gta5-original-323.1.exe          .rdata     369800 [  36a000]  171b000 [ 171b000]   369800  1718e00
-    //gta5-original-323.1.exe          .data      ffa4e8 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
-    //gta5-original-323.1.exe          .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
-    //gta5-original-323.1.exe          .tls          a00 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
-    //gta5-original-323.1.exe          BINKCONS      200 [    1000]  2b72000 [ 2b72000]      200  1d7e000
-    //gta5-original-323.1.exe          .rsrc       2de00 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
-    //gta5-original-323.1.exe          .reloc      d5600 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
-    //gta5-original-323.1.exe          .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
+    //xxx-original-323.1.exe          .text     1717c00 [ 1718000]     1000 [    1000]  1717c00      600
+    //xxx-original-323.1.exe          BINK          c00 [    1000]  1719000 [ 1719000]      c00  1718200
+    //xxx-original-323.1.exe          BINKBSS        60 [    1000]  171a000 [ 171a000]        0        0
+    //xxx-original-323.1.exe          .rdata     369800 [  36a000]  171b000 [ 171b000]   369800  1718e00
+    //xxx-original-323.1.exe          .data      ffa4e8 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
+    //xxx-original-323.1.exe          .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
+    //xxx-original-323.1.exe          .tls          a00 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
+    //xxx-original-323.1.exe          BINKCONS      200 [    1000]  2b72000 [ 2b72000]      200  1d7e000
+    //xxx-original-323.1.exe          .rsrc       2de00 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
+    //xxx-original-323.1.exe          .reloc      d5600 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
+    //xxx-original-323.1.exe          .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
 
-    //gta5-original-323.1-scylla-fixed .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600
-    //gta5-original-323.1-scylla-fixed BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200
-    //gta5-original-323.1-scylla-fixed BINKBSS      1000 [    1000]  171a000 [ 171a000]        0        0
-    //gta5-original-323.1-scylla-fixed .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00
-    //gta5-original-323.1-scylla-fixed .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
-    //gta5-original-323.1-scylla-fixed .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
-    //gta5-original-323.1-scylla-fixed .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
-    //gta5-original-323.1-scylla-fixed BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
-    //gta5-original-323.1-scylla-fixed .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
-    //gta5-original-323.1-scylla-fixed .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
-    //gta5-original-323.1-scylla-fixed .text     125d000 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
+    //xxx-original-323.1-scylla-fixed .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600
+    //xxx-original-323.1-scylla-fixed BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200
+    //xxx-original-323.1-scylla-fixed BINKBSS      1000 [    1000]  171a000 [ 171a000]        0        0
+    //xxx-original-323.1-scylla-fixed .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00
+    //xxx-original-323.1-scylla-fixed .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
+    //xxx-original-323.1-scylla-fixed .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
+    //xxx-original-323.1-scylla-fixed .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
+    //xxx-original-323.1-scylla-fixed BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
+    //xxx-original-323.1-scylla-fixed .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
+    //xxx-original-323.1-scylla-fixed .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
+    //xxx-original-323.1-scylla-fixed .text     125d000 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
 
-    //ManualMapCallback: ImageCallback gta5 - original - 323.1 - cff.exe 0 3ed4000 0
-    //ManualMapCallback: ImageCallback gta5-original-323.1.exe           0 3ed3c00 0
+    //ManualMapCallback: ImageCallback xxx - original - 323.1 - cff.exe 0 3ed4000 0
+    //ManualMapCallback: ImageCallback xxx-original-323.1.exe           0 3ed3c00 0
     // 0x3ed3000
 
-    uintptr_t start  = 0x1000;
-    uintptr_t start2 = 0x1000;
+    auto correct_size = ntheader->OptionalHeader.BaseOfCode;
+
     for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
-        auto size     = SectionHeader[i].Misc.VirtualSize;
-        auto old_size = size;
-        size          = PAGE_ALIGN_UP_MIN1(size);
         //*outs << fmt::format("{:32} {:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
         //                     narrow(ImageName),
         //                     SectionHeader[i].Name,
         //                     SectionHeader[i].Misc.VirtualSize,
         //                     size,
         //                     SectionHeader[i].VirtualAddress,
-        //                     start,
+        //                     correct_size,
         //                     SectionHeader[i].SizeOfRawData,
         //                     SectionHeader[i].PointerToRawData)
         //      << "\n";
-        start += size;
-        start2 += PAGE_ALIGN_UP_MIN1(SectionHeader[i].PointerToRawData);
 
         int prot = UC_PROT_READ | UC_PROT_EXEC | UC_PROT_WRITE;
         if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
@@ -585,14 +651,19 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
         if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_WRITE)
             prot |= UC_PROT_WRITE;
 
-        auto SectionSize = AlignSize(
+        auto SectionSize = (DWORD)ALIGN_UP_MIN1(
             max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
             SectionAlignment);
+
+        correct_size += SectionSize;
 
         uc_mem_protect(m_uc, image_base + SectionHeader[i].VirtualAddress, SectionSize, prot);
 
         if (SectionHeader[i].Characteristics & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE)) {
-            bool bIsUnknownSection = (0 == memcmp((char*)SectionHeader[i].Name, ".text\0\0\0", 8) || 0 == memcmp((char*)SectionHeader[i].Name, "INIT\0\0\0\0", 8) || 0 == memcmp((char*)SectionHeader[i].Name, "PAGE\0\0\0\0", 8)) ? false : true;
+            bool bIsUnknownSection = !(
+                0 == memcmp((char*)SectionHeader[i].Name, ".text\0\0\0", 8) ||
+                0 == memcmp((char*)SectionHeader[i].Name, "INIT\0\0\0\0", 8) ||
+                0 == memcmp((char*)SectionHeader[i].Name, "PAGE\0\0\0\0", 8));
 
             mod->FakeSections.emplace_back(SectionHeader[i].VirtualAddress, SectionSize, (char*)SectionHeader[i].Name, bIsUnknownSection);
 
@@ -605,13 +676,24 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
 }
 
 // CircularBuffer<FuncTailInsn, 128> history;
-static boost::circular_buffer<std::string> history(32);
+static boost::circular_buffer<std::string> history(8);
 
 void advance_rip(uc_engine* uc, int offset) {
     uintptr_t rip;
     uc_reg_read(uc, UC_X86_REG_RIP, &rip);
     rip += offset;
     uc_reg_write(uc, UC_X86_REG_RIP, &rip);
+}
+
+void set_rip(uc_engine* uc, uintptr_t rip) {
+    uc_reg_write(uc, UC_X86_REG_RIP, &rip);
+}
+
+void adjust_rsp(uc_engine* uc, int offset) {
+    uintptr_t rsp;
+    uc_reg_read(uc, UC_X86_REG_RIP, &rsp);
+    rsp += offset;
+    uc_reg_write(uc, UC_X86_REG_RIP, &rsp);
 }
 
 static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* user_data) {
@@ -625,6 +707,17 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
     ctx->FlushMemMapping();
 
     if (ctx->m_Disassemble) {
+        mem::region rr(ctx->m_ImageBase, ctx->m_ImageEnd - ctx->m_ImageBase);
+        auto ripadd = [&](const std::string& str, uintptr_t rip) {
+            if (~pystring::find(str, "[rip ")) {
+                auto splut = preg_split(" ([-+]) ", str, MAXINT, PREG_SPLIT_DELIM_CAPTURE);
+                if (splut.size() == 3) {
+                    return fmt::format("[rel {:#x}]", rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
+                }
+            }
+            return str;
+        };
+
         static std::map<std::string, size_t> insn_count;
         static std::set<uintptr_t> call_targets;
         auto [it, suc] = visited.emplace(address);
@@ -632,8 +725,8 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
 
-            cs_insn insn;
-            memset(&insn, 0, sizeof(insn));
+            cs_insn* insn;
+            //memset(&insn, 0, sizeof(insn));
 
             int64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
@@ -641,99 +734,148 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
             uint64_t virtualBase = ctx->NormaliseBase(address);
             uint8_t* code        = codeBuffer;
             size_t codeSize      = size;
-            cs_disasm_iter(ctx->m_cs, (const uint8_t**)&code, &codeSize, &virtualBase, &insn);
-            std::stringstream region2;
+            auto count           = cs_disasm(ctx->m_cs, code, codeSize, virtualBase, 0, &insn);
+            if (count) {
+                int ii = 0;
 
-            std::string op_string = insn.op_str;
-            if (ctx->m_SkipSecondCall) {
-                if (!strcmp(insn.mnemonic, "call")) {
-                    char* errch      = NULL;
-                    uintptr_t target = strtoull(op_string.c_str(), &errch, 16);
-                    if (*errch != '\0') {
-                        *outs << "string couldn't be converted to ll: " << op_string << "\n";
-                        return;
-                    }
+                std::string op_string = insn[ii].op_str;
+                //regex = r"\b(rip[+-]0x[0-9a-f]+)"
+                //operand = re.sub(regex, lambda m: ripadd(m.group(), ea + size), operand, 0, re.IGNORECASE)
+                if (~pystring::find(op_string, "[rip ")) {
+                    std::vector<std::string> splut;
+                    pystring::split(op_string, splut, ", ");
+                    op_string = _::join_array(_::map2(splut, [&](const std::string& s) { return ripadd(s, ctx->NormaliseBase(address + insn->size)); }), ", ");
+                }
 
-                    auto [iter, inserted] = call_targets.emplace(target);
-                    if (inserted) {
-                        auto& call_count = insn_count[insn.mnemonic];
-                        call_count       = call_count + 1;
-                        *outs << fmt::format("insn \"{}\" used {} times with unique target\n", insn.mnemonic, call_count);
-                        if (call_count == 2 || call_count == 4) {
-                            *outs << "skipping call " << call_count << " to " << op_string << "\n";
-                            advance_rip(uc, 5);
-                            if (call_count == 11) {
-                                //*outs << "setting return of skipped call to non-zero\n";
-                                ctx->m_SkipSecondCall = false;
+                op_string = preg_replace(" ([-+]) ", R"($1)", op_string.c_str());
+
+                op_string = regex_replace(op_string, std::regex(R"(\b0x14[0-9a-fA-F]{7})"), [=](const std::smatch& m) {
+                    auto match = m.str();
+                    auto index = m.position();
+                    std::string prefix(m.str());
+                    prefix += ":";
+
+                    // TODO: these won't work if base is not 0x140000000
+                    if (auto _addr = asQword(match.c_str(), 16)) {
+                        uintptr_t addr      = *_addr;
+                        uintptr_t next_addr = 0;
+
+                        while (UC_ERR_OK == uc_mem_read(ctx->m_uc, addr, &next_addr, 8)) {
+                            if (auto it = megaFuncFull.find(ctx->NormaliseBase(addr, 0)); it != megaFuncFull.end()) {
+                                return fmt::format("{}{}", prefix, it->second);
                             }
+
+                            std::wstring DllName;
+                            FakeAPI_t* api = nullptr;
+                            if (ctx->FindAPIByAddress(addr, DllName, &api)) {
+                                return fmt::format("{}{}!{}", prefix, narrow(DllName), api->ProcedureName);
+                            }
+
+                            prefix += "&";
+                            addr = next_addr;
+                        }
+                    }
+                    return match;
+                });
+
+                if (ctx->m_SkipSecondCall || ctx->m_SkipFourthCall) {
+                    if (!strcmp(insn[ii].mnemonic, "call")) {
+                        char* errch      = NULL;
+                        uintptr_t target = strtoull(op_string.c_str(), &errch, 16);
+                        if (*errch != '\0') {
+                            *outs << "call operand couldn't be converted to ll: " << op_string << "\n";
                             return;
+                        }
+
+                        auto [iter, inserted] = call_targets.emplace(target);
+                        if (inserted) {
+                            ctx->m_Calls.emplace_back(ctx->NormaliseBase(address, 0), ctx->NormaliseBase(address + insn[ii].size + mem::pointer(code - 4).as<int32_t&>(), 0));
+                            auto& call_count = insn_count[insn[ii].mnemonic];
+                            call_count       = call_count + 1;
+                            *outs << fmt::format("insn \"{}\" used {} times with unique target\n", insn[ii].mnemonic, call_count);
+                            if ((ctx->m_SkipSecondCall && call_count == 2)) {
+                                *outs << "skipping call " << call_count << " to " << op_string << "\n";
+                                advance_rip(uc, 5);
+                                ctx->m_SkipSecondCall = false;
+                                return;
+                            }
+                            if ((ctx->m_SkipFourthCall && call_count == 4)) {
+                                *outs << "skipping call " << call_count << " to " << op_string << "\n";
+                                advance_rip(uc, 5);
+                                ctx->m_SkipFourthCall = false;
+                                return;
+                            }
                         }
                     }
                 }
-            }
-            if (ctx->m_SkipSecondCall && ctx->m_History) {
-                FuncTailInsn fti;
-                fti.ea(ctx->NormaliseBase(address))
-                    .text(fmt::format("{} {}", insn.mnemonic, op_string))
-                    .size(size)
-                    .code(std::string((char*)codeBuffer, size))
-                    .mnemonic(insn.mnemonic)
-                    .operands(op_string);
-                history.push_back(fmt::format("{} {}", insn.mnemonic, op_string));
-                group_t capture_groups;
-                if (multimatch(history, {
-                                            R"(jmp .*)",
-                                            R"(mov eax, dword ptr \[rip \+ .*])",
-                                            R"(mov edx, dword ptr \[rip - .*])",
-                                            R"(cmp eax, edx)",
-                                            R"(jne ({jne}.*)",
-                                            R"(mov eax, dword ptr \[rbp \+ 0x64])",
-                                            R"(test eax, eax)",
-                                            R"(jne .*)",
+                if (ctx->m_History) {
+					static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
+                    FuncTailInsn fti;
+                    fti.ea(ctx->NormaliseBase(address))
+                        .text(fmt::format("{} {}", insn[ii].mnemonic, op_string))
+                        .size(size)
+                        .code(std::string((char*)codeBuffer, size))
+                        .mnemonic(insn[ii].mnemonic)
+                        .operands(op_string);
+                    history.push_back(fmt::format("{} {}", insn[ii].mnemonic, op_string));
+                    group_t capture_groups;
+                    if (multimatch(history, {
+                                                R"(push rbp)",
+                                                R"(lea rbp, \[rel ({jtarget}[::address::])\])",
+                                                R"(xchg qword ptr \[rsp\], rbp)",
+                                                R"(jmp ({ctarget}[::address::]))",
+                                            },
+                                   capture_groups, '$')) {
+                        // this is really:  `call ctarget` `jmp jtarget`, and
+                        // we need a way to trigger our "call counter"... lets
+                        // use some temporary memory as a trampoline-ish device:
+                        scratch = mbs(scratch)
+                            .nop(1)
+                            .call(parseUint(capture_groups["ctarget"][0], 16, 0))
+                            .jmp(parseUint(capture_groups["jtarget"][0], 16, 0));
+                        adjust_rsp(ctx->m_uc, +8);
+                        set_rip(ctx->m_uc, ctx->m_ImageEnd + 0x100);
+                    }
+                    if (0 && multimatch(history, {
+                                                     R"(jmp .*)",
+                                                     R"(mov eax, dword ptr \[rip\+.*])",
+                                                     R"(mov edx, dword ptr \[rip-.*])",
+                                                     R"(cmp eax, edx)",
+                                                     R"(jne ({jne}.*)",
+                                                     R"(mov eax, dword ptr \[rbp\+0x64])",
+                                                     R"(test eax, eax)",
+                                                     R"(jne .*)",
 
-                                            //R"(push.*0x10)",
-                                            //R"(test rsp, 0xf)",
-                                            //R"(jn[ze] .*)",
-                                            ////R"(push.*0x18)",
-                                            //R"(call ({target}0x\x+))",
-                                        },
-                               //R"((add|sub) rsp, .*)",
-                               //R"((mov|lea).*r[sb]p.*r[sb]p)",
-                               //R"((mov|lea).*r[sb]p.*r[sb]p)",
-                               //R"(lea rbp, \[rel ({jmp}\w+)])",
-                               //R"(xchg \[rsp], rbp)",
-                               //R"(push rbp)",
-                               //R"(lea rbp, \[rel ({call}\w+)])",
-                               //R"(xchg \[rsp], rbp)",
-                               //R"(retn?)"},
-                               capture_groups, '^')) {
-                    for (auto& [key, values] : capture_groups) {
-                        *outs << "capture group: " << key << ": " << _::join(values, ", ") << std::endl;
+                                                     //R"(push.*0x10)",
+                                                     //R"(test rsp, 0xf)",
+                                                     //R"(jn[ze] .*)",
+                                                     ////R"(push.*0x18)",
+                                                     //R"(call ({target}0x\x+))",
+
+                                                     //R"((add|sub) rsp, .*)",
+                                                     //R"((mov|lea).*r[sb]p.*r[sb]p)",
+                                                     //R"((mov|lea).*r[sb]p.*r[sb]p)",
+                                                     //R"(lea rbp, \[rel ({jmp}\w+)])",
+                                                     //R"(xchg \[rsp], rbp)",
+                                                     //R"(push rbp)",
+                                                     //R"(lea rbp, \[rel ({call}\w+)])",
+                                                     //R"(xchg \[rsp], rbp)",
+                                                     //R"(retn?)",
+                                                 },
+                                        capture_groups, '^')) {
+                        for (auto& [key, values] : capture_groups) {
+                            *outs << "capture group: " << key << ": " << _::join(values, ", ") << std::endl;
+                        }
                     }
                 }
-            }
 
-            op_string = regex_replace(op_string, std::regex(R"(\b0x14[0-9a-fA-F]{7})"), [=](const std::smatch& m) {
-                auto match = m.str();
-                auto index = m.position();
-
-                char* errch       = NULL;
-                uintptr_t _offset = strtoull(match.c_str(), &errch, 16);
-                if (*errch != '\0') {
-                    *outs << "string couldn't be converted to ll: " << match << "\n";
+                std::stringstream region2;
+                if (ctx->FindAddressInRegion(address, region2)) {
+                    *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string << "\n";
+                } else {
+                    *outs << std::hex << virtualBase << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << insn[ii].op_str << "\n";
                 }
-
-                if (auto it = megaFuncFull.find(_offset - 0x140000000); it != megaFuncFull.end()) {
-                    return it->second;
-                }
-
-                return match;
-            });
-
-            if (ctx->FindAddressInRegion(address, region2)) {
-                *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn.mnemonic << "\t\t" << op_string << "\n";
-            } else {
-                *outs << std::hex << virtualBase << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn.mnemonic << "\t\t" << insn.op_str << "\n";
+                cs_free(insn, count);
             }
         }
     }
@@ -832,13 +974,13 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             if (ctx->FindAddressInRegion(address, region))
                 *outs << "UC_MEM_FETCH_UNMAPPED from " << region.str() << "\n";
             else
-                *outs << "UC_MEM_FETCH_UNMAPPED from " << address << "\n";
+                *outs << "UC_MEM_FETCH_UNMAPPED from " << std::hex << address << std::dec << "\n";
 
             std::stringstream region2;
             if (ctx->FindAddressInRegion(rip, region2))
                 *outs << "UC_MEM_FETCH_UNMAPPED rip at " << region2.str() << "\n";
             else
-                *outs << "UC_MEM_FETCH_UNMAPPED rip at " << rip << "\n";
+                *outs << "UC_MEM_FETCH_UNMAPPED rip at " << std::hex << rip << std::dec << "\n";
 
             //return true;
             uc_emu_stop(uc);
@@ -943,7 +1085,7 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
         case UC_MEM_WRITE: {
             if (!ctx->m_SaveWritten.empty()) {
                 if (ctx->m_Bitmap && address >= ctx->m_ImageBase && address < ctx->m_ImageEnd) {
-                    address -= 0x140000000;
+                    address -= ctx->m_ImageBase;
                     while (size-- > 0) {
                         ctx->m_WrittenBitmap[address++] = true;
                     }
@@ -1030,7 +1172,8 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
                     callback(uc, address, size, user_data);
                 }
             } else {
-                *outs << "unknown API called\n";
+                LOG("unknown API {:#x} called", ctx->NormaliseBase(address));
+                //*outs << "unknown API called\n";
                 auto retaddr = EmuReadReturnAddress(uc);
                 if (retaddr >= ctx->m_ImageBase && retaddr < ctx->m_ImageEnd)
                     *outs << "called from imagebase+0x" << std::hex << (ULONG)(retaddr - ctx->m_ImageBase) << "\n";
@@ -1441,7 +1584,6 @@ void WriteMemoryAccesses(std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const
         vec.clear();
     }
 }
-
 uc_err patch_nops(uc_engine* uc, uint64_t address, size_t count) {
     // stored as an array of [9][8] (not ragged)
     const unsigned char nop_bytes[][8] = {
@@ -1464,6 +1606,29 @@ uc_err patch_nops(uc_engine* uc, uint64_t address, size_t count) {
         address     = address + size;
     }
     return err;
+}
+
+void* patch_nops(void* ptr, size_t count) {
+    // stored as an array of [9][8] (not ragged)
+    const unsigned char nop_bytes[][8] = {
+        {},
+        {0x90},
+        {0x66, 0x90},
+        {0x0f, 0x1f, 0x00},
+        {0x0f, 0x1f, 0x40, 0x00},
+        {0x0f, 0x1f, 0x44, 0x00, 0x00},
+        {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00},
+        {0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00},
+        {0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+    };
+
+    while (count) {
+        size_t size = count > 8 ? 8 : count;
+        memcpy(ptr, nop_bytes[size], size);
+        count = count - size;
+        ptr   = (char*)ptr + size;
+    }
+    return ptr;
 }
 
 void* uc_memcpy(
@@ -1531,13 +1696,13 @@ int main(int argc, char** argv) {
     //for (auto& param : cmdl.params("ea"))  // iterate on all params called "input"
     //    *outs << '\t' << param.first << " : " << param.second << '\n';
 
-    *outs << "\nValues for all multiple-use parameters:\n";
-    for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
-        if (cmdl.params(param).size() > 1) {
-            for (auto& param2 : cmdl.params(param))  // iterate on all params called "input"
-                *outs << '\t' << param2.first << " : " << param2.second << '\n';
-            *outs << '\n';
-        }
+    //*outs << "\nValues for all multiple-use parameters:\n";
+    //for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
+    //    if (cmdl.params(param).size() > 1) {
+    //        for (auto& param2 : cmdl.params(param))  // iterate on all params called "input"
+    //            *outs << '\t' << param2.first << " : " << param2.second << '\n';
+    //        *outs << '\n';
+    //    }
 
     std::string filename;
     cmdl(1) >> filename;
@@ -1552,10 +1717,12 @@ int main(int argc, char** argv) {
     ctx.m_BoundCheck     = cmdl["boundcheck"];
     ctx.m_Dump           = cmdl["dump"];
     ctx.m_FindChecks     = cmdl["find"];
-    ctx.m_SkipSecondCall = cmdl["skip-segment-checks"];
+    ctx.m_SkipSecondCall = cmdl["skip-second-call"];
+    ctx.m_SkipFourthCall = cmdl["skip-4th-call"];
     ctx.m_History        = cmdl["history"];
+    ctx.m_PatchRuntime   = cmdl["patch-runtime"];
     if (cmdl("save-written") >> ctx.m_SaveWritten) {
-        if (!fs::is_directory(ctx.m_SaveWritten)) {
+        if (!fs::is_directory(ctx.m_SaveWritten) && !fs::create_directory(ctx.m_SaveWritten)) {
             *outs << "Not a directory: " << ctx.m_SaveWritten << "\n";
             return 0;
         }
@@ -1563,7 +1730,7 @@ int main(int argc, char** argv) {
         make_spread_folders(ctx.m_SaveWritten);
     }
     if (cmdl("save-read") >> ctx.m_SaveRead) {
-        if (!fs::is_directory(ctx.m_SaveRead)) {
+        if (!fs::is_directory(ctx.m_SaveRead) && !fs::create_directory(ctx.m_SaveRead)) {
             *outs << "Not a directory: " << ctx.m_SaveRead << "\n";
             return 0;
         }
@@ -1597,16 +1764,16 @@ int main(int argc, char** argv) {
     }
     /// (1) CS_OP_DETAIL = CS_OPT_ON
     /// (2) Engine is not in Skipdata mode (CS_OP_SKIPDATA option set to CS_OPT_ON)
-    //auto err3 = cs_option(ctx.m_cs, CS_OPT_DETAIL, CS_OPT_ON);
-    //   if (err3) {
-    //       printf("failed to cs_option CS_OPT_DETAIL %d\n", err2);
-    //       return 0;
-    //   }
-    //   auto err4 = cs_option(ctx.m_cs, CS_OPT_SKIPDATA, CS_OPT_OFF);
-    //   if (err4) {
-    //       printf("failed to cs_option CS_OPT_SKIPDATA %d\n", err2);
-    //       return 0;
-    //   }
+    auto err3 = cs_option(ctx.m_cs, CS_OPT_DETAIL, CS_OPT_ON);
+    if (err3) {
+        printf("failed to cs_option CS_OPT_DETAIL %d\n", err2);
+        return 0;
+    }
+    auto err4 = cs_option(ctx.m_cs, CS_OPT_SKIPDATA, CS_OPT_OFF);
+    if (err4) {
+        printf("failed to cs_option CS_OPT_SKIPDATA %d\n", err2);
+        return 0;
+    }
 
     ctx.m_uc = uc;
     ctx.thisProc.Attach(GetCurrentProcessId());
@@ -1641,6 +1808,9 @@ int main(int argc, char** argv) {
 
     uc_mem_map(uc, ctx.m_HeapBase, ctx.m_HeapEnd - ctx.m_HeapBase, (ctx.m_IsKernel) ? UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC : UC_PROT_READ | UC_PROT_WRITE);
 
+    if (!fs::exists(wfilename)) {
+        LOG("File does not exist: {}", narrow(wfilename));
+    }
     auto MapResult = ctx.thisProc.mmap().MapImage(wfilename,
                                                   ManualImports | NoSxS | NoExceptions | NoDelayLoad | NoTLS | NoExceptions | NoExec,
                                                   ManualMapCallback, &ctx, 0, 0x140000000, PreManualMapCallback);
@@ -1657,6 +1827,12 @@ int main(int argc, char** argv) {
     ctx.m_ImageEntry     = ctx.m_ImageBase + ExtractEntryPointRva((PVOID)res->imgPtr);
     ctx.m_LastRipModule  = ctx.m_ImageBase;
     ctx.m_ExecuteFromRip = ctx.m_ImageEntry;
+
+    if (cmdl("entry")) {
+        if (auto addr = asQword(cmdl("entry").str())) {
+            ctx.m_ExecuteFromRip = *addr;
+        }
+    }
     // 143E5F107
     printf("ctx.m_ImageBase: 0x%llx\n", ctx.m_ImageBase);
     printf("ctx.m_ImageEnd: 0x%llx\n", ctx.m_ImageEnd);
@@ -1668,7 +1844,7 @@ int main(int argc, char** argv) {
         ctx.RegisterAPIEmulation(L"kernel32.dll", "GetSystemTimeAsFileTime", EmuGetSystemTimeAsFileTime, 1);
         ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentThreadId", EmuGetCurrentThreadId, 0);
         ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcessId", EmuGetCurrentProcessId, 0);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcessId", EmuGetCurrentProcess, 0);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcess", EmuGetCurrentProcess, 0);
         ctx.RegisterAPIEmulation(L"kernel32.dll", "QueryPerformanceCounter", EmuQueryPerformanceCounter, 1);
         ctx.RegisterAPIEmulation(L"kernel32.dll", "LoadLibraryExW", EmuLoadLibraryExW, 3);
         ctx.RegisterAPIEmulation(L"kernel32.dll", "LoadLibraryA", EmuLoadLibraryA, 1);
@@ -1796,30 +1972,35 @@ int main(int argc, char** argv) {
         }
     }
 
-	auto scan_all_do = [](mem::region r, mem::pattern p,
-									 std::function<uintptr_t(uintptr_t)> iter) {
-		for (mem::pointer ea : mem::scan_all(p, r)) {
-			iter(ea.as<uintptr_t>());
-		}
-	};
+    auto scan_all_do = [](mem::region r, mem::pattern p,
+                          std::function<void(uintptr_t)> iter) {
+        size_t counter = 0;
+        for (mem::pointer ea : mem::scan_all(p, r)) {
+            iter(ea.as<uintptr_t>());
+            ++counter;
+        }
+        LOG("scan_all_do found {} matches for {}", counter, p.to_string());
+    };
 
-	auto scan_all_with_iteratee = [](mem::region r, mem::pattern p,
-									 std::function<uintptr_t(uintptr_t)> iter) -> std::vector<mem::pointer> {
-		std::vector<mem::pointer> found;
-		for (mem::pointer ea : mem::scan_all(p, r)) {
-			auto ptr = iter(ea.as<uintptr_t>());
-			if (ptr) found.emplace_back(ptr);
-		}
-		return found;
-	};
+    auto scan_all_with_iteratee = [](mem::region r, mem::pattern p,
+                                     std::function<uintptr_t(uintptr_t)> iter) -> std::vector<mem::pointer> {
+        std::vector<mem::pointer> found;
+        for (mem::pointer ea : mem::scan_all(p, r)) {
+            auto ptr = iter(ea.as<uintptr_t>());
+            if (ptr) found.emplace_back(ptr);
+        }
+        return found;
+    };
 
     // --patch="14000100:66 90 E9 00 00 00 00" --patch= ...
     for (auto& param : cmdl.params("patch")) {
         auto st_addr  = string_between("", ":", param.second);
         auto st_patch = string_between(":", "", param.second);
-        if (auto addr = asQword(st_addr)) {
+        if (auto addr = asQword(st_addr, 16)) {
+            LOG("patching {:#x} with {}", *addr, st_patch);
             mbs(*addr).write_pattern(st_patch.c_str());
-        }
+        } else
+            LOG("patching: couldn't process {} as an address", st_addr);
     }
     if (cmdl["rebuild"]) {
     }
@@ -1909,8 +2090,9 @@ int main(int argc, char** argv) {
         ctx.filename = filename;
         *outs << "Filename: " << ctx.filename << "\n";
 
-        if (false && fs::exists("e:/ida/gtasc-2612/names.json")) {
-            std::ifstream infile("e:/ida/gtasc-2612/names.json");
+        auto fnJson = replace_extension(ctx.filename, "json");
+        if (fs::exists(fnJson)) {
+            std::ifstream infile(fnJson);
             json j;
             infile >> j;
 
@@ -1942,8 +2124,6 @@ int main(int argc, char** argv) {
         // 350.2
 
         if (cmdl["fti"]) {
-#define LOG_ADDR_N(X) *outs << #X << ": " << std::hex << normalise_base(X.as<uintptr_t>()) << std::dec << std::endl
-#define LOG_ADDR(X) *outs << #X << ": " << std::hex << X.as<uintptr_t>() << std::dec << std::endl
             // ("55 48 81 ec b0").add(0x58 - 9).rip(4).add(3).dword()
 
             if (1) {
@@ -2015,48 +2195,102 @@ int main(int argc, char** argv) {
             uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
             mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
 
-			auto normalise_base = [&](uintptr_t ea) {
-				return r.adjust_base(0x140000000, ea).as<uintptr_t>();
-			};
-			// mem("55 48 81 ec b0").find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45", 2).dword()
-			mbs ptr1;
+            auto normalise_base = [&](uintptr_t ea) {
+                return r.adjust_base(0x140000000, ea).as<uintptr_t>();
+            };
+            auto m_normalise_base = [&](mbs& ea) {
+                return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+            };
+            // mem("55 48 81 ec b0").find("3b c2 0f 85", 128).add(4).rip(4).matches("c7 45", 2).dword()
+            // m = mem(FindInSegments("48 89 6c 24 f8 48 8d 64 24 f8")).find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45 64 01 00 00 00", 7)
+            // m = [x for x in [mem(ea).add(4).rip(4).is_match("c7 45 .. 01 00 00 00", 7) for ea in FindInSegments("3b c2 0f 85")] if not x.in_error()]
+            // clang-format off
+            mbs ptr1;
+            scan_all_do(r, mem::pattern("3b c2 0f 85"), [&](auto ea) {
+				mbs(ea)
+					.add(4)
+					.rip(4)
+					.and_then([&](auto m) { 
+					        LOG("and then... {:x}", m_normalise_base(m));
+							// C7 45 64 01 00 00 00
+							m.if_find("c7 45 ?? 01 00 00 00", 0, [&](auto m) { 
+								 LOG("found ptr1 at {:#x}", m_normalise_base(m));
+								 ptr1 = m.add(7); 
+								 if (m.add(3).as<uint32_t&>() == 1) {
+									 m.add(3).as<uint32_t&>() = 0; 
+									 LOG("rewrite dword 1 to 0");
+								 }
+								 else
+									 LOG("dword was not 1 as we expected");
+							 }).or_else([&]{
+								 LOG("wasn't ptr1 at {:#x}", m_normalise_base(m));
+							 });
+					})
+					.or_else([] {
+						*outs << "couldn't find start of unpack\n";
+					});
+				});
+			#if 0
+            scan_all_do(r, mem::pattern("55 48 81 ec ?? 00 00 00"), [&](auto ea) {
+				mbs(ea)
+					.if_find("3b c2 0f 85", 256, [&](auto m) {
+					    LOG("found 3b c2 05 85");
+						m.add(4)
+						 .rip(4)
+						 .if_find("c7 45", 0, [&](auto m) { 
+							 LOG("found ptr1 at {:#x}", m_normalise_base(m));
+							 ptr1 = m.add(7); 
+							 if (m.add(3).as<uint32_t&>() == 1) {
+								 m.add(3).as<uint32_t&>() = 0; 
+								 LOG("rewrite dword 1 to 0");
+							 }
+							 else
+								 LOG("dword was not 1 as we expected");
+						 }).or_else([]{
+							 *outs << "couldn't find ptr1\n";
+						 });
+					})
+					.or_else([] {
+						*outs << "couldn't find start of unpack\n";
+					});
+			});
+			#endif
+
+            // for x in FindInSegments("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"):
+            //     mem(x).add(21).rip(4).matches('c7 45 .. 00 00 00 00').jmp(y)
+			bool done = false;
             scan_all_do(r,
-                mem::pattern("55 48 81 ec ?? 00 00 00"), 
-                [&](uintptr_t ea) {
-                    *outs << "found1 " << std::hex << normalise_base(ea) << "\n";
-                    return mbs(ea).find("3b c2 0f 85", 256).and_then([&](auto m) {
-						*outs << "found2 " << std::hex << normalise_base(m.as<uintptr_t>()) << "\n";
-                        return m.add(4).rip(4).is_match("c7 45").and_then([&](auto m) {
-							*outs << "found3 " << std::hex << normalise_base(m.as<uintptr_t>()) << "\n";
-                            if (m.add(3).as<uint32_t&>() == 1) {
-                                ptr1 = m.add(7);  // start of next insn, replace with `jmp` later
-                                *outs << "changing dword 0x01 to 0x00\n";
-								m.add(3).as<uint32_t&>() = 0;
-                                return m.as<uintptr_t>();
-                            }
-                            return 0LLU;
+                        mem::pattern("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"),
+                        [&](uintptr_t ea) {
+                            *outs << "found5 " << std::hex << normalise_base(ea) << "\n";
+                            mbs(ea).add(21).rip(4).matches("c7 45 ?? 00 00 00 00").and_then([&](auto m) {
+                                *outs << "found6 " << std::hex << m_normalise_base(m) << "\n";
+                                if (ptr1) {
+                                    *outs << "replacing ptr1 with jmp\n";
+                                    ptr1.as<uint8_t&>()           = 0xe9;
+                                    ptr1.offset(1).as<int32_t&>() = (int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5);
+									done = true;
+                                    // return ptr1.jmp(m_normalise_base(m)).as<uintptr_t>();
+                                }
+                            });
                         });
-                    }).as<uintptr_t>();
-                });
 
-			// for x in FindInSegments("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"):
-			//     mem(x).add(21).rip(4).is_match('c7 45 .. 00 00 00 00').jmp(y)
-            scan_all_do(r,
-                mem::pattern("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"), 
-				[&](uintptr_t ea) {
-                    *outs << "found5 " << std::hex << normalise_base(ea) << "\n";
-                    return mbs(ea).add(21).rip(4).is_match("c7 45 ?? 00 00 00 00").and_then([&](auto m) {
-						*outs << "found6 " << std::hex << normalise_base(m.as<uintptr_t>()) << "\n";
-                        if (ptr1) {
-                            *outs << "replacing ptr1 with jmp\n";
-							ptr1.as<uint8_t&>() = 0xe9;
-							ptr1.offset(1).as<int32_t&>() = m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5;
-							// return ptr1.jmp(normalise_base(m.as<uintptr_t>())).as<uintptr_t>();
-						}
-						return 0LLU;
-                    });
-                });
+			if (!done) {
+				LOG("couldn't complete patches, exiting.");
+				uc_close(uc);
+				cs_close(&ctx.m_cs);
+				ctx.thisProc.mmap().UnmapAllModules();
+				timer.ShowElapsed();
+				exit(1);
+			}
 
+			//if (auto p = GetPattern(S("01 b9 2f a9"), 
+   //                             S("Launcher Check")).Sub(9).Rip())
+			//{
+			//	g_ByteManagement.ReturnValue(p.As<void*>(), (uint32_t)1, S("Launcher Check Patch"));
+			//}
+
+            // clang-format on
             auto iteratee = [&](mem::pointer ea) -> uintptr_t {
                 LOG_ADDR_N(ea);
                 auto ptr = ea.add(0x58 - 9).rip(4);
@@ -2097,10 +2331,10 @@ int main(int argc, char** argv) {
                 }
                 return 0;
             };
-			//mem::pattern p("55 48 81 ec b0");
-   //         if (auto found = mem::scan(p, r)) {
-   //             iteratee(found);
-   //         }
+            //mem::pattern p("55 48 81 ec b0");
+            //         if (auto found = mem::scan(p, r)) {
+            //             iteratee(found);
+            //         }
             uc_mem_write(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
         }
 
@@ -2331,8 +2565,7 @@ int main(int argc, char** argv) {
                 0x0, 0x1, 0x0, 0x0, 0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59,
                 0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
 
-            uintptr_t base_address           = 0x140000000;
-            base_address                     = ctx.m_ImageEnd;
+            uintptr_t base_address           = ctx.m_ImageEnd;
             const uintptr_t prologue_address = base_address + 0x100;
             uintptr_t dst                    = std::get<1>(tpl);
             err                              = uc_mem_write(uc, prologue_address, prologue_bytes, sizeof(prologue_bytes));
@@ -2425,6 +2658,10 @@ int main(int argc, char** argv) {
     if (ctx.m_Dump) {
         virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
         virtual_buffer_t RebuildSectionBuffer;
+        mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
+        auto m_normalise_base = [&](mem::pointer& ea) {
+            return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+        };
 
         uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
 
@@ -2439,8 +2676,26 @@ int main(int argc, char** argv) {
             SectionHeader[i].SizeOfRawData    = SectionHeader[i].Misc.VirtualSize;
         }
 
+        if (ctx.m_PatchRuntime) {
+            mem::scan(mem::pattern("01 b9 2f a9"), r)
+                .or_else([] { LOG("Couldn't patch launcher detection"); })
+                .and_then([&](auto m) {
+                    LOG("Patching launcher detection at {:#x}", m_normalise_base(m));
+                    m.sub(9).rip(4).put_bytes(mem::pattern("b8 01 00 00 00 c3"));
+                });
+
+            if (ctx.m_Calls.size() < 3)
+                LOG("Couldn't find second call to patch for runtime execution");
+            else {
+                auto& [call, target] = ctx.m_Calls[2];
+                LOG("Patching runtime tamper detection at offset {:#x}", call);
+                patch_nops((char*)imagebuf.at(call), 5);
+            }
+        }
+
         // ctx.RebuildSection(imagebuf.GetBuffer(), (ULONG)(ctx.m_ImageEnd - ctx.m_ImageBase), RebuildSectionBuffer);
 
+        ctx.m_ImageRealEntry = 0x140000000;
         if (ctx.m_ImageRealEntry)
             ntheader->OptionalHeader.AddressOfEntryPoint = (ULONG)(ctx.m_ImageRealEntry - ctx.m_ImageBase);
 
@@ -2457,9 +2712,7 @@ int main(int argc, char** argv) {
     }
 
     uc_close(uc);
-
     cs_close(&ctx.m_cs);
-
     ctx.thisProc.mmap().UnmapAllModules();
     timer.ShowElapsed();
 
@@ -2480,6 +2733,7 @@ int main(int argc, char** argv) {
     *outs << "flushing...\n";
     std::string k;
     std::cin >> k;
+    *outs << "should exit now" << std::endl;
     exit(0);
 
     outs->flush();

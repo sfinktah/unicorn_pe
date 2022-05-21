@@ -1,10 +1,43 @@
 #pragma once
 
-#include "Filesystem.hpp"
 #include <regex>
-using namespace std::literals::string_literals;
 #include <iostream>
 #include <optional>
+#include "maclog.h"
+#include "Filesystem.hpp"
+
+using namespace std::literals::string_literals;
+extern std::ostream* outs;
+#define LOG(X, ...) (*outs << fmt::format((X), ##__VA_ARGS__) << "\n")
+
+using vector_string         = std::vector<std::string>;
+using cref_string           = const std::string&;
+using cref_vector_string    = const vector_string&;
+using movable_string        = std::string;
+using movable_vector_string = vector_string;
+using ptr_string            = std::string*;
+using ptr_vector_string     = vector_string*;
+using ref_string            = std::string&;
+using ref_vector_string     = vector_string&;
+using string_vector         = vector_string;
+using vector_cube_string    = std::vector<std::vector<std::string>>;
+using vector_int            = std::vector<int>;
+using vector_pair_string    = std::vector<std::pair<std::string, std::string>>;
+using vector_vector_string  = std::vector<vector_string>;
+
+using vector_wstring         = std::vector<std::wstring>;
+using cref_wstring           = const std::wstring&;
+using cref_vector_wstring    = const vector_wstring&;
+using movable_wstring        = std::wstring;
+using movable_vector_wstring = vector_wstring;
+using ptr_wstring            = std::wstring*;
+using ptr_vector_wstring     = vector_wstring*;
+using ref_wstring            = std::wstring&;
+using ref_vector_wstring     = vector_wstring&;
+using wstring_vector         = vector_wstring;
+using vector_cube_wstring    = std::vector<std::vector<std::wstring>>;
+using vector_pair_wstring    = std::vector<std::pair<std::wstring, std::wstring>>;
+using vector_vector_wstring  = std::vector<vector_wstring>;
 
 std::string GetModuleName(const HMODULE module);
 fs::path GetModulePath(std::string name);
@@ -81,6 +114,36 @@ inline int __cdecl strcmp(const std::string& str1, char const* str2) { return st
 inline int __cdecl strcmp(char const* str1, const std::string& str2) { return str2.compare(str1) * -1; }
 inline int __cdecl strcmp(const std::string& str1, const std::string& str2) { return str1.compare(str2); }
 
+#pragma region stripos
+// int stripos ( string $haystack , string $needle [, int $offset = 0 ] )
+// https://stackoverflow.com/questions/3152241/case-insensitive-stdstring-find
+// templated version of my_equal so it could work with both char and wchar_t
+template <typename charT>
+struct my_equal {
+    my_equal(const std::locale& loc) : loc_(loc) {}
+    bool operator()(charT ch1, charT ch2) { return std::toupper(ch1, loc_) == std::toupper(ch2, loc_); }
+
+private:
+    const std::locale& loc_;
+};
+
+// find substring (case insensitive)
+/// <summary>Find the numeric position of the first occurrence of needle in the haystack string (case-insensitive).</summary>
+/// <param name="haystack">The string to search in.</param>
+/// <param name="needle">A string of one or more characters.</param>
+/// <param name="loc">The locale (optional)</param>
+/// <returns>Returns the position of where the needle exists relative to the beginnning of the haystack string, or -1</returns>
+template <typename T>
+int stripos(const T& haystack, const T& needle, const std::locale& loc = std::locale()) {
+    typename T::const_iterator it =
+        std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), my_equal<typename T::value_type>(loc));
+    if (it != haystack.end())
+        return it - haystack.begin();
+    else
+        return -1;  // not found
+}
+#pragma endregion stripos
+
 #define STRING_BETWEEN_NOT_INCLUSIVE 0x00
 #define STRING_BETWEEN_INCLUSIVE 0x01
 #define STRING_BETWEEN_NOT_GREEDY 0x00
@@ -125,6 +188,21 @@ bool StringEndsWith(const std::string& haystack, const std::string& needle);
 bool StringStartsWith(const std::string& haystack, const std::string& needle);
 bool StringContains(const std::string& haystack, const std::string& needle, size_t* index = nullptr, size_t* remainder = nullptr);
 
+// If this flag is set, only non - empty pieces will be returned by preg_split().
+#define PREG_SPLIT_NO_EMPTY (1 << 0)
+// If this flag is set, parenthesized expression in the delimiter pattern will be captured and returned as well.
+#define PREG_SPLIT_DELIM_CAPTURE (1 << 1)
+// If this flag is set, for every occurring match the appendant string offset will also be returned.Note that this changes the
+// return value in an array where every element is an array consisting of the matched string at offset 0 and its string offset into
+// subject at offset 1.
+#define PREG_SPLIT_OFFSET_CAPTURE (1 << 2)
+// If this flag is set, an empty array is returned if no delimiters are found
+#define PREG_SPLIT_NO_DEFAULT (1 << 3)
+
+std::vector<std::string> preg_split(const std::string& pattern, const std::string& subject, int limit = LONG_MAX, int flags = 0);
+std::vector<std::string> preg_split_string_view(const std::string& pattern, const std::string& subject, int limit, int flags);
+std::vector<std::string> preg_split_inverse(const std::string& input, const std::string& regex, int limit = LONG_MAX, int flags = 0);
+
 #define PREG_MATCH_IGNORE_CASE (1 << 0)
 int preg_match_all(std::string pattern, std::string subject, std::vector<std::string>& matches, int flags = 0, int offset = 0);
 int sregex_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches = nullptr, int flags = 0);
@@ -135,9 +213,14 @@ bool regex_match(const std::string& pattern, const std::string& subject, bool ig
 template <typename CharType>
 std::basic_string<CharType> preg_replace(const CharType* pattern, const CharType* replacement, const CharType* subject) {
     // https://stackoverflow.com/questions/23622622/c-regex-with-char-and-wchar-t/23623610#23623610
-    std::basic_regex<CharType> _pattern(pattern);
-    std::basic_string<CharType> _subject(subject);
-    return std::regex_replace(_subject, _pattern, replacement);
+    try {
+        std::basic_regex<CharType> _pattern(pattern);
+        std::basic_string<CharType> _subject(subject);
+        return std::regex_replace(_subject, _pattern, replacement);
+    } catch (const std::regex_error& e) {
+        LOG_FUNC("regex_error caught processing {} {}", pattern, e.what());
+        return subject;
+    }
 }
 
 // https://stackoverflow.com/questions/22617209/regex-replace-with-callback-in-c11
@@ -227,6 +310,7 @@ std::optional<R> parseUintOpt(const T& str, int base) {
     } catch (std::invalid_argument) {
     } catch (std::out_of_range) {
     }
+    LOG("couldn't parse {} as int with base {}", str, base);
     return std::nullopt;
 }
 
@@ -241,6 +325,7 @@ std::optional<R> parseIntOpt(const T& str, int base) {
     } catch (std::invalid_argument) {
     } catch (std::out_of_range) {
     }
+    LOG("couldn't parse {} as int with base {}", str, base);
     return std::nullopt;
 }
 

@@ -155,7 +155,7 @@ public:
 	void SortModuleList();
 
 	void MapImageToEngine(const std::wstring &ImageName, PVOID ImageBase, ULONG ImageSize, ULONG64 MappedBase, ULONG64 EntryPoint);
-	uintptr_t NormaliseBase(ULONG64 address) const;
+	uintptr_t NormaliseBase(ULONG64 address, ULONG64 base = 0x140000000) const;
 
 	bool FindAddressInRegion(ULONG64 address, std::stringstream &RegionName);
 	bool FindAPIByAddress(ULONG64 address, std::wstring &DllName, FakeAPI_t **api);
@@ -271,7 +271,9 @@ public:
 	bool m_FindChecks;
 	bool m_Bitmap;
 	bool m_History;
-	bool m_SkipSecondCall;;
+	bool m_SkipSecondCall;
+	bool m_SkipFourthCall;;
+	bool m_PatchRuntime;
 
 	uint64_t m_KSharedUserDataBase;
 	uint64_t m_KSharedUserDataEnd;
@@ -327,6 +329,7 @@ public:
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Read;
 	std::vector<bool> m_WrittenBitmap;
 	std::vector<uintptr_t> m_StartAddresses;
+	std::vector<std::tuple<uintptr_t, uintptr_t>> m_Calls;
 };
 
 extern PeEmulation g_ctx;
@@ -340,11 +343,12 @@ void* uc_memset( uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size);
 
 #define API_FUNCTION_SIZE 8
 #define PAGE_SIZE 0x1000
-#define PAGE_ALIGN(Va) (ULONG_PTR)(Va) & ~(PAGE_SIZE - 1)
-#define PAGE_ALIGN_UP(Va) ((ULONG_PTR)(Va) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
-#define PAGE_ALIGN_UP_MIN1(Va) (((ULONG_PTR)(Va) ? (ULONG_PTR)(Va) : 1) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1)
-#define PAGE_ALIGN_64(Va) (Va) & ~(0x1000ull - 1)
-#define PAGE_ALIGN_64k(Va) ((Va)) & ~(0x10000ull - 1)
+#define PAGE_ALIGN(Va) ((ULONG_PTR)(Va) & ~(PAGE_SIZE - 1))
+#define PAGE_ALIGN_UP(Va) (((ULONG_PTR)(Va) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
+#define PAGE_ALIGN_UP_MIN1(Va) ((((ULONG_PTR)(Va) ? (ULONG_PTR)(Va) : 1) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
+#define PAGE_ALIGN_64(Va) ((Va) & ~(0x1000ull - 1))
+#define PAGE_ALIGN_64k(Va) (((Va)) & ~(0x10000ull - 1))
+#define ALIGN_UP_MIN1(Va, Align) ((((Va) ? (Va) : 1) + Align - 1) & ~(Align - 1))
 
 #define AlignSize(Size, Align) (Size+Align-1)/Align*Align
 

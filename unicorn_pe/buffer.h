@@ -9,6 +9,7 @@ public:
 	void * GetSpace(size_t needSize);
 	size_t GetLength() { return m_cbSize; }
 	void * GetBuffer() { return m_pBuffer; }
+	void * at(size_t offset) { return (void*)((uintptr_t)m_pBuffer + offset); }
 
 	void * m_pBuffer;
 	size_t m_cbSize;

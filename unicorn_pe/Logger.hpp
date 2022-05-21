@@ -5,48 +5,42 @@
 #include <fmt/format.h>
 #include <fmt/printf.h>
 
-class Logger
-{
-   public:
+class Logger {
+public:
     void Init();
     void Uninit();
 
-    void Log(std::string_view message)
-    {
+    void Log(std::string_view message) {
         LogImpl(message);
     }
 
-    void Logf(std::string_view message)
-    {
+    void Logf(std::string_view message) {
         LogImpl(message);
     }
 
     template <typename... Args>
-    void Log(std::string_view format, const Args&... args)
-    {
+    void Log(std::string_view format, const Args&... args) {
         LogImpl(fmt::format(format, args...));
     }
 
     template <typename... Args>
-    void Logf(std::string_view format, const Args&... args)
-    {
+    void Logf(std::string_view format, const Args&... args) {
         LogImpl(fmt::sprintf(format, args...));
     }
 
-   private:
+private:
     void LogImpl(std::string_view message);
 
     std::mutex m_Mutex;
     std::ofstream m_File;
-
 };
 
 extern Logger g_Logger;
 
+#define LOG_IMPL(format, ...) ::g_Logger.Log(format, ##__VA_ARGS__)
+#ifndef LOG
+extern std::ostream* outs;
 
-#define LOG_IMPL(format, ...) ::g_Logger.Log(format, __VA_ARGS__)
-#define LOGF_IMPL(format, ...) ::g_Logger.Logf(format, __VA_ARGS__)
-#define LOG(format, ...) LOG_IMPL(format, __VA_ARGS__)
-#define LOGF(format, ...) LOGF_IMPL(format, __VA_ARGS__)
+#define LOG(X, ...) (*outs << fmt::format((X), ##__VA_ARGS__) << "\n")
+#endif
 
-#define LOG_DEV(format, ...) __noop

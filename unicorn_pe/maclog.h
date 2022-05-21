@@ -1,5 +1,6 @@
 #pragma once
-#define LOG_NOOP LOGF
+
+#define LOG_NOOP LOG
 #define LOG_TRACE LOG_NOOP
 #define LOG_INFO LOG_NOOP
 #define LOG_DEBUG LOG_NOOP

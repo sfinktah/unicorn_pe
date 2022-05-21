@@ -253,6 +253,104 @@ bool StringStartsWith(const std::string& haystack, const std::string& needle) {
 #endif
 }
 
+std::string get_regex_error(const std::regex_error& e) {
+    std::string err_message = e.what();
+
+#define CASE(type, msg)                               \
+    case std::regex_constants::type:                  \
+        err_message += " ("s + #type "):\n  "s + msg; \
+        break
+    switch (e.code()) {
+        CASE(error_collate, "The expression contains an invalid collating element name");
+        CASE(error_ctype, "The expression contains an invalid character class name");
+        CASE(error_escape, "The expression contains an invalid escaped character or a trailing escape");
+        CASE(error_backref, "The expression contains an invalid back reference");
+        CASE(error_brack, "The expression contains mismatched square brackets ('[' and ']')");
+        CASE(error_paren, "The expression contains mismatched parentheses ('(' and ')')");
+        CASE(error_brace, "The expression contains mismatched curly braces ('{' and '}')");
+        CASE(error_badbrace, "The expression contains an invalid range in a {} expression");
+        CASE(error_range, "The expression contains an invalid character range (e.g. [b-a])");
+        CASE(error_space, "There was not enough memory to convert the expression into a finite state machine");
+        CASE(error_badrepeat, "one of *?+{ was not preceded by a valid regular expression");
+        CASE(error_complexity, "The complexity of an attempted match exceeded a predefined level");
+        CASE(error_stack, "There was not enough memory to perform a match");
+    }
+#undef CASE
+
+    return err_message;
+    ///* std::cerr */ std::cout << err_message << ". \n\n";
+}
+
+// PREG_SPLIT_NO_EMPTY - If this flag is set, only non - empty pieces will be returned by preg_split().
+// PREG_SPLIT_DELIM_CAPTURE - If this flag is set, parenthesized expression in the delimiter pattern will be captured and
+// returned as well.
+// PREG_SPLIT_OFFSET_CAPTURE - If this flag is set, for every occurring match the appendant string offset will
+// also be returned. Note that this changes the return value in an array where every element is an array consisting of the
+// matched string at offset 0 and its string offset into subject at offset 1.
+// PREG_SPLIT_NO_DEFAULT - If this flag is set, an
+// empty array is returned if no delimiters are found
+//!@see: http://php.net/preg_split
+std::vector<std::string> preg_split(const std::string& pattern, const std::string& subject, int limit, int flags) {
+    std::regex re(pattern);
+    auto words_begin = std::sregex_iterator(subject.begin(), subject.end(), re);
+    auto words_end   = std::sregex_iterator();
+    auto found       = std::distance(words_begin, words_end);
+    if (!found) return (flags & PREG_SPLIT_NO_DEFAULT) ? std::vector<std::string>{} : std::vector<std::string>{subject};
+
+    int count = 0;
+    std::vector<std::string> result;
+    std::string suffix;
+    for (std::sregex_iterator i = words_begin; i != words_end && count < limit; ++count) {
+        const std::smatch& r = *i;
+
+        if (count < limit - 1) {
+            if (!(flags & PREG_SPLIT_NO_EMPTY) || r.prefix().length()) result.emplace_back(r.prefix());
+            if (flags & PREG_SPLIT_DELIM_CAPTURE) result.emplace_back(r.str());
+            // copy the suffix in-case this is the last iteration
+            suffix = std::string(r.suffix());
+
+            // if this is the last separator, we must append the suffix
+            if (++i == words_end)
+                // here we used the captured suffix, because r.suffix() is no-longer valid
+                // TODO: check if it is safe to use a `char*` instead.
+                if (suffix.length()) result.emplace_back(suffix);
+        } else {
+            // we've reached the preset `limit` for results, so just dump the rest of the string.
+            // TODO: find out if there is a way to to do as one single copy
+            result.emplace_back(static_cast<std::string>(r.prefix()) + r.str() + static_cast<std::string>(r.suffix()));
+        }
+    }
+
+    return result;
+}
+
+std::vector<std::string> preg_split_string_view(const std::string& pattern, const std::string& subject, int limit, int flags) {
+
+    struct result_triplet_t {
+        std::string_view prefix;
+        std::string_view str;
+        std::string_view suffix;
+        result_triplet_t() = default;
+        // sfink: NOTE: couldn't cast smatch.str() et. al. directly into string_view.
+        result_triplet_t(const std::string& prefix, const std::string& str, const std::string& suffix) : prefix(prefix), str(str), suffix(suffix) {}
+    };
+
+    std::vector<result_triplet_t> scan;
+    std::regex re(pattern);
+    auto words_begin = std::sregex_iterator(subject.begin(), subject.end(), re);
+    auto words_end   = std::sregex_iterator();
+    auto found       = std::distance(words_begin, words_end);
+    if (!found) return (flags & PREG_SPLIT_NO_DEFAULT) ? std::vector<std::string>{} : std::vector<std::string>{subject};
+
+    int count = 0;
+    for (std::sregex_iterator i = words_begin; i != words_end && count < limit; ++count) {
+        const std::smatch& r = *i;
+        scan.emplace_back(r.prefix(), r.str(), r.suffix());
+    }
+
+    return {"TODO"};
+}
+
 #define PREG_PATTERN_ORDER 0
 #define PREG_SET_ORDER 1
 #define PREG_OFFSET_CAPTURE 2
@@ -328,8 +426,14 @@ bool regex_match(const std::string& pattern, const std::string& subject, bool ig
     try {
         std::regex r(pattern, (std::regex_constants::syntax_option_type)(ignoreCase ? std::regex_constants::icase : 0));
         return std::regex_match(subject, r);
+    } catch (const std::regex_error& e) {
+        LOG_FUNC("regex_error caught processing {} {}", pattern, e.what());
+    } catch (std::runtime_error& e) {
+        LOG_FUNC("rimetime_error caught: {}", e.what());
+    } catch (std::exception& e) {
+        LOG_FUNC("exception caught: {}", e.what());
     } catch (...) {
-        LOG_FUNC("clearly we need better exception handling");
+        LOG_FUNC("... clearly we need better exception handling");
     }
     return false;
 }
@@ -340,12 +444,22 @@ std::string regex_search(const std::string& pattern, const std::string& subject,
         std::regex r(pattern, options | (std::regex_constants::syntax_option_type)(ignoreCase ? std::regex_constants::icase : 0));
         std::smatch sm;
         if (std::regex_search(subject, sm, r)) {
+#ifdef _DEBUG
+            for (size_t i = 0; i < sm.size(); ++i) {
+                LOG("regex_search_match ({}): '{}'", i, sm.str(i));
+            }
+#endif
             return sm.str(sm.size() - 1);
             // return sm.str();
         }
+    } catch (const std::regex_error& e) {
+        LOG_FUNC("regex_error caught processing {} {}", pattern, e.what());
+    } catch (std::runtime_error& e) {
+        LOG_FUNC("rimetime_error caught: {}", e.what());
+    } catch (std::exception& e) {
+        LOG_FUNC("exception caught: {}", e.what());
     } catch (...) {
-        LOG_FUNC("clearly we need better exception handling");
-        return "";
+        LOG_FUNC("... clearly we need better exception handling");
     }
 
     return "";
@@ -442,7 +556,7 @@ size_t file_put_contents(const std::string& filename, const char* start, size_t 
         fclose(fw);
         return written;
     }
-    LOG_WARN("Couldn't open file for writing '%s'.", filename.c_str());
+    LOG_WARN("Couldn't open file for writing '{}'.", filename.c_str());
     return 0;
 }
 
@@ -504,13 +618,13 @@ std::optional<uint64_t> asQword(const std::string& arg, int default_base) {
         }
     }
 
-    if (auto match = regex_search(R"(^-((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
+    if (auto match = regex_search("^-((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
         opt_value = parseIntOpt(match, 16);
-    else if (auto match = regex_search(R"(^((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
+    else if (auto match = regex_search("^((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
         opt_value = parseUintOpt(match, 16);
     else if (auto match = regex_search("^[0-9a-fA-F]+(?=h)$", haystack); !match.empty())
         opt_value = parseUintOpt(match, 16);
-    else if (auto match = regex_search(R"(^exe\+([0-9a-fA-F]+)$)", haystack); !match.empty())
+    else if (auto match = regex_search(R"(^exe\+(?:0[xX])?([0-9a-fA-F]+)$)", haystack); !match.empty())
         opt_value = parseUintOpt(match, 16);
     else
         opt_value = parseUintOpt(match, default_base);

@@ -212,6 +212,15 @@ namespace membricksafe {
 
         R rip(std::uintptr_t ipoffset) const { return this->offset(ipoffset).offset(this->read<int>()); }
 
+        template <typename Region>
+        R s_rip(Region _region, std::uintptr_t ipoffset) const {
+            auto result = this->offset(ipoffset).offset(this->read<int>());
+            if (_region.contains(result.as<uintptr_t>()))
+            //if (std::find(std::begin(_region), std::end(_region), result) != std::end(_region))
+                return result;
+			return nullptr;
+        }
+
         R translate(memBrickBase from, memBrickBase to) const {
             return to.offset(this->as<std::intptr_t>() - from.as<std::intptr_t>());
         }
@@ -243,7 +252,7 @@ namespace membricksafe {
                 count       = count - size;
                 address     = address + size;
             }
-            return _handle;
+            return this->offset(count);
         }
 
         R nop(std::size_t size, PATCH_ENTRY patch) {
@@ -288,26 +297,26 @@ namespace membricksafe {
             // surely not the best way to do it, but whatever
             this->write<uint8_t>(0xe8);
             this->offset(1).write<int>(func - this->as<uintptr_t>() - 5);
-            return this->_handle;
+            return this->offset(5);
         }
 
         R jmp(const uintptr_t func) {
             this->write<uint8_t>(0xe9);
             this->offset(1).write<int>((int)(func - this->as<uintptr_t>() - 5));
-            return this->_handle;
+            return this->offset(5);
         }
 
         // template, or implement for multiple argument types
         R call(void* func) {
             this->write<uint8_t>(0xe8);
             this->offset(1).write<int>(reinterpret_cast<uintptr_t>(func) - this->as<uintptr_t>() - 5);
-            return this->_handle;
+            return this->offset(5);
         }
 
         R jmp(void* func) {
             this->write<uint8_t>(0xe9);
             this->offset(1).write<int>(reinterpret_cast<uintptr_t>(func) - this->as<uintptr_t>() - 5);
-            return this->_handle;
+            return this->offset(5);
         }
 
         PPATCH_ENTRY jmp_pe(void* func, PATCH_ENTRY patch) {
@@ -604,14 +613,22 @@ namespace membricksafe {
             return (static_cast<memBrickSafe>(offset(pos / 3))).rip(4);
         }
 
+        template <typename Func1, typename Func2>
+        R if_then(Func1&& func1, Func2&& func2) const {
+            auto r = std::forward<Func1>(func1)(*this);
+            return r ? std::forward<Func2>(func2)(r) ? *this;
+        }
+
         template <typename Func>
         R and_then(Func&& func) const {
-            return _handle ? std::forward<Func>(func)(*this) : 0LLU;
+            if (_handle) std::forward<Func>(func)(*this);
+            return *this;
         }
 
         template <typename Func>
         R or_else(Func&& func) const {
-            return _handle ? *this : std::forward<Func>(func)();
+            if (!_handle) std::forward<Func>(func)();
+            return *this;
         }
 
         template <typename Func, typename Func2>
@@ -620,11 +637,17 @@ namespace membricksafe {
             return *this;
         }
 
-        R is_match(const char* pattern) {
+        R matches(const char* pattern) const {
             return this->find(pattern);
         }
 
-        R find(const char* pattern, std::size_t size = 0) {
+        template <typename Func>
+        R if_find(const char* pattern, std::size_t size, Func&& func) const {
+            R found = this->find(pattern, size);
+            return found ? std::forward<Func>(func)(found), *this : *this;
+        }
+
+        R find(const char* pattern, std::size_t size = 0) const {
             struct nibble {
                 std::uint8_t value  = 0;
                 std::uint8_t offset = 0;
@@ -646,10 +669,10 @@ namespace membricksafe {
             }
 
             if (!size) size = nibbles[count].offset + 1;
-			auto end = size - nibbles[count].offset;
-            printf("base: %llx\n", this->as<uintptr_t>());
-            printf("size: %llu\n", size);
-            printf("end: %llx\n", size);
+            auto end = size - nibbles[count].offset;
+            //printf("base: %llx\n", this->as<uintptr_t>());
+            //printf("size: %llu\n", size);
+            //printf("end: %llx\n", size);
             for (std::size_t i = 0; i < end; i++) {
                 R currentOffset = this->offset(i);
 
@@ -658,39 +681,39 @@ namespace membricksafe {
                 for (std::size_t j = 0; j < count; ++j) {
                     if (nibbles[j].value != currentOffset.offset(nibbles[j].offset).read<std::uint8_t>()) {
                         found = false;
-
                         break;
                     }
                 }
 
                 if (found) {
+                    //printf("found at offset %llx\n", currentOffset.as<uintptr_t>());
                     return currentOffset;
                 }
             }
 
+            //printf("not found\n");
             return nullptr;
         }
 
-    //    R find(const char* pattern, std::size_t size = 0) {
-    //        memBrickSafe result = memBrick::scan(this->_handle, size, pattern);
-    //        if (result) {
-    //            printf("found at offset %llu\n", result.as<uintptr_t>());
-				//return this->add(result.as<uintptr_t>());
-    //        } else {
-				//printf("not found\n");
-				//return nullptr;
-    //        }
-    //    }
+        //    R find(const char* pattern, std::size_t size = 0) {
+        //        memBrickSafe result = memBrick::scan(this->_handle, size, pattern);
+        //        if (result) {
+        //            printf("found at offset %llu\n", result.as<uintptr_t>());
+        //return this->add(result.as<uintptr_t>());
+        //        } else {
+        //printf("not found\n");
+        //return nullptr;
+        //        }
+        //    }
 
-        uint32_t dword() {
+        uint32_t dword() const {
             return this->as<uint32_t&>();
         }
 
-        R dword(uint32_t value) {
+        R dword(uint32_t value) const {
             this->as<uint32_t&>() = value;
             return this->_handle;
         }
-
     };
 
     // memBrickSafe SafeScan(const char* pattern, DWORD patternHash = 0);

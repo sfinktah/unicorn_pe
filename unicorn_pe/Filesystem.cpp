@@ -1,6 +1,7 @@
 #include <string>
 #include "Filesystem.hpp"
 #include <shlobj.h>
+#include <Windows.h>
 #include <fmt/format.h>
 
 std::string ExePath() {
@@ -47,4 +48,12 @@ std::string smart_path(const std::string& path) {
 		}
 	}
 	return path;
+}
+
+// string extension from filename.ext
+std::string replace_extension(const std::string& path, const std::string& extension) {
+    fs::path dir(path);
+    // do we need to widen the extension??? really??
+    fs::path dirname = dir.replace_extension(extension);
+    return dirname.string();
 }

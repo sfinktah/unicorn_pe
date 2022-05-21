@@ -83,5 +83,8 @@
     <ClInclude Include="multimatch.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="xrange.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

@@ -3,12 +3,21 @@
 #include <regex>
 #include <iostream>
 #include <optional>
+#include <functional>
 #include "maclog.h"
 #include "Filesystem.hpp"
 
 using namespace std::literals::string_literals;
 extern std::ostream* outs;
 #define LOG(X, ...) (*outs << fmt::format((X), ##__VA_ARGS__) << "\n")
+#define CUSTOM_EXCEPTION(XNAME)                                                \
+    class XNAME : public ::std::exception {                                    \
+    public:                                                                    \
+        typedef ::std::exception BASECLASS;                                    \
+        explicit XNAME() : BASECLASS() {}                                      \
+        explicit XNAME(const ::std::string& what) : BASECLASS(what.c_str()) {} \
+        explicit XNAME(const char* what) : BASECLASS(what) {}                  \
+    };
 
 using vector_string         = std::vector<std::string>;
 using cref_string           = const std::string&;
@@ -267,50 +276,60 @@ std::string regex_replace(const std::string& s, const std::basic_regex<CharT, Tr
 std::string regex_search(const std::string& pattern, const std::string& subject, bool ignoreCase = {},
                          std::regex_constants::syntax_option_type options = {});
 
-template <typename CharT>
-int64_t parseInt(const std::basic_string<CharT>& str, int base, int64_t defaultValue) {
+template <typename CharT, typename R = int64_t>
+R parseInt(const std::basic_string<CharT>& str, int base, R defaultValue = 0) {
     std::size_t pos = -1;
     try {
         auto rv = std::stoll(str, &pos, base);
         if (pos != str.length()) {
-            LOG_DEBUG(__FUNCTION__ ": pos != len (%llu, %llu) on %s", pos, str.length(), str.c_str());
-            return defaultValue;
+            LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}'", pos, str.length(), str);
+            LOG_DEBUG(__FUNCTION__ ":     unprocessed string here -----{}^", pystring::mul("-", (int)pos));
+            return rv; // defaultValue;
         }
         return rv;
     } catch (std::invalid_argument) {
+            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
+            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
     return defaultValue;
 }
 
 template <typename T, typename R = uint64_t>
-R parseUint(const T& str, int base, R defaultValue) {
+R parseUint(const T& str, int base, R defaultValue = 0) {
     std::size_t pos = -1;
     try {
         auto rv = std::stoull(str, &pos, base);
         if (pos != str.length()) {
-            LOG_DEBUG(__FUNCTION__ ": pos != len (%llu, %llu) on %s", pos, str.length(), str.c_str());
-            return defaultValue;
+			LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}' (base {})", pos, str.length(), str, base);
+            LOG_DEBUG(__FUNCTION__ ":     unprocessed partial string --{}^", pystring::mul("-", (int)pos));
+            return rv; // defaultValue;
         }
         return rv;
     } catch (std::invalid_argument) {
+            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
+            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
     return defaultValue;
 }
 
 template <typename T, typename R = uint64_t>
 std::optional<R> parseUintOpt(const T& str, int base) {
-    std::size_t pos = -1;
+    std::size_t pos;
     try {
         auto rv = std::stoull(str, &pos, base);
         if (pos == str.length()) {
             return rv;
         }
+		LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}' (base {})", pos, str.length(), str, base);
+		LOG_DEBUG(__FUNCTION__ ":     unprocessed partial string --{}^", pystring::mul("-", (int)pos));
+		if ("ALLOW_PARTIAL") return rv;
     } catch (std::invalid_argument) {
+            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
+            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
-    LOG("couldn't parse {} as int with base {}", str, base);
     return std::nullopt;
 }
 
@@ -322,16 +341,20 @@ std::optional<R> parseIntOpt(const T& str, int base) {
         if (pos == str.length()) {
             return rv;
         }
+		LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}'", pos, str.length(), str.c_str());
+		LOG_DEBUG(__FUNCTION__ ":     unprocessed string here -----{}^", pystring::mul("-", (int)pos));
+		return rv;
     } catch (std::invalid_argument) {
+            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
+            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
-    LOG("couldn't parse {} as int with base {}", str, base);
     return std::nullopt;
 }
 
-int64_t parseInt(const std::string& str, int base, int64_t defaultValue);
-int64_t parseInt(const std::string& str, int base = 10);
-int64_t parseInt(const std::wstring& str, int base = 10);
+//int64_t parseInt(const std::string& str, int base, int64_t defaultValue = 0LL);
+//int64_t parseInt(const std::string& str, int base = 10);
+//int64_t parseInt(const std::wstring& str, int base = 10);
 
 std::vector<std::string> explode(char delimiter, const std::string& subject, int limit = LONG_MAX);
 std::string base64_decode(const std::string& data);
@@ -362,6 +385,8 @@ typename std::optional<std::reference_wrapper<R>> safeDereferenceOptRef(T addres
     return std::nullopt;
 }
 
+// https://stackoverflow.com/questions/62312879/boosthana-how-to-check-if-a-type-is-stdoptional
+std::optional<uint64_t> asQwordO(std::optional<std::string> optarg, int default_base = 0);
 std::optional<uint64_t> asQword(const std::string& arg, int default_base = 0);
 std::optional<uint32_t> asDword(const std::string& arg, int default_base = 0);
 std::optional<bool> asBool(const std::string& arg);

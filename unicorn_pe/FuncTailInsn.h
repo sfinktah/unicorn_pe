@@ -19,8 +19,8 @@
 
 #define SETONLY(TYPE, FN, VAR)   \
     METHOD CLASS& FN(TYPE VAR) { \
-        auto r       = *this;    \
-        return r.VAR = VAR, *this;   \
+        this->VAR = VAR;    \
+        return *this;   \
     }
 
 #undef VARONLY

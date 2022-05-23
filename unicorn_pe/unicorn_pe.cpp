@@ -45,10 +45,12 @@ using namespace nowide;
 //#include "../vendor/lodash/071_join.h"
 //#include "../vendor/lodash/001_each.h"
 //#include "../vendor/lodash/024_keys.h"
-//#include "../vendor/lodash/026_slice.h"
+#include "../vendor/lodash/026_slice.h"
 #include "../vendor/lodash/071_join.h"
+#include "../vendor/lodash/075_first.h"
 #include "../vendor/lodash/095_uniq.h"
 #include "multimatch.h"
+#include "MegaFunc.h"
 
 using json = nlohmann::json;
 using namespace blackbone;
@@ -88,7 +90,7 @@ bool EmuReadNullTermString(uc_engine* uc, uint64_t address, std::string& str);
 static ULONG ExtractEntryPointRva(PVOID ModuleBase) {
     return RtlImageNtHeader(ModuleBase)->OptionalHeader.AddressOfEntryPoint;
 }
-std::map<uint64_t, std::string> megaFuncFull;
+std::map<uint64_t, std::string> megaFuncNames;
 
 template <typename Container>
 uc_err uc_mem_write(uc_engine* uc, uint64_t address, const Container& obj) {
@@ -117,7 +119,7 @@ uintptr_t PreManualMapCallback(int type, blackbone::pe::PEImage& peImage, const 
 
         for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
             auto SectionSize = (DWORD)ALIGN_UP_MIN1(
-                max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
+                std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
                 SectionAlignment);
 
             *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
@@ -274,6 +276,27 @@ bool PeEmulation::FindAddressInRegion(ULONG64 address, std::stringstream& Region
     if (address >= m_KSharedUserDataBase && address < m_KSharedUserDataEnd) {
         RegionName << "KSharedUserData+" << std::hex << (address - m_KSharedUserDataBase);
         return true;
+    }
+
+    return false;
+}
+
+bool PeEmulation::OldFindAPIByAddress(ULONG64 address, std::wstring& DllName, FakeAPI_t** api) {
+    for (size_t i = 0; i < m_FakeModules.size(); ++i) {
+        auto& m = m_FakeModules[i];
+        if (address >= m->ImageBase && address < m->ImageBase + m->ImageSize) {
+            DllName = m->DllName;
+
+            for (size_t j = 0; j < m->FakeAPIs.size(); ++j) {
+                auto r = &m->FakeAPIs[j];
+                if (r->VirtualAddress == address) {
+                    *api = r;
+                    return true;
+                }
+            }
+
+            break;
+        }
     }
 
     return false;
@@ -460,7 +483,7 @@ NTSTATUS PeEmulation::LdrLoadDllByName(const std::wstring& DllName, ULONG64* Ima
                                               ManualMapCallback, this);
 
     if (!MapResult.success()) {
-        printf("LdrLoadDllByName failed to MapImage %ws, status %08X\n", DllName.c_str(), MapResult.status);
+        //printf("LdrLoadDllByName failed to MapImage %ws, status %08X\n", DllName.c_str(), MapResult.status);
         return MapResult.status;
     }
 
@@ -652,7 +675,7 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
             prot |= UC_PROT_WRITE;
 
         auto SectionSize = (DWORD)ALIGN_UP_MIN1(
-            max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
+            std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
             SectionAlignment);
 
         correct_size += SectionSize;
@@ -676,7 +699,7 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
 }
 
 // CircularBuffer<FuncTailInsn, 128> history;
-static boost::circular_buffer<std::string> history(8);
+static boost::circular_buffer<FuncTailInsn> history(16);
 
 void advance_rip(uc_engine* uc, int offset) {
     uintptr_t rip;
@@ -686,31 +709,84 @@ void advance_rip(uc_engine* uc, int offset) {
 }
 
 void set_rip(uc_engine* uc, uintptr_t rip) {
+    uintptr_t _rip;
+    uc_reg_read(uc, UC_X86_REG_RIP, &_rip);
     uc_reg_write(uc, UC_X86_REG_RIP, &rip);
+    LOG("set_rip {:x} -> {:x}", _rip, rip);
 }
 
-void adjust_rsp(uc_engine* uc, int offset) {
+uintptr_t adjust_rsp(uc_engine* uc, int offset) {
     uintptr_t rsp;
-    uc_reg_read(uc, UC_X86_REG_RIP, &rsp);
+    uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
     rsp += offset;
-    uc_reg_write(uc, UC_X86_REG_RIP, &rsp);
+    uc_reg_write(uc, UC_X86_REG_RSP, &rsp);
+    return rsp;
 }
+
+uintptr_t uc_rip(uc_engine* uc) {
+    uintptr_t rip;
+    uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+    return rip;
+}
+
+template <typename T = uintptr_T>
+T uc_peek(uc_engine* uc) {
+    T value;
+    uintptr_t rsp;
+    if (!uc_reg_read(uc, UC_X86_REG_RSP, &rsp))
+        if (!uc_mem_read(uc, rsp, &value, sizeof(value)))
+            return value;
+    LOG("error uc_pop");
+    return {};
+}
+
+template <typename T>
+uc_err uc_push(uc_engine* uc, T value) {
+    uintptr_t val64 = (uintptr_t)value;
+    return uc_mem_write(uc, adjust_rsp(uc, -8), &val64, sizeof(val64));
+}
+
+template <typename T>
+T uc_pop(uc_engine* uc) {
+    T value = uc_peek<uintptr_t>(uc);
+    adjust_rsp(uc, +8);
+    return value;
+}
+
+uintptr_t uc_call(uc_engine* uc, uintptr_t target, uintptr_t source) {
+    if (source == 0)
+        source = uc_rip(uc);
+    uc_push(uc, source);
+    set_rip(uc, target);
+    return source;
+}
+
+uintptr_t uc_ret(uc_engine* uc, int stack_adjust) {
+    adjust_rsp(uc, stack_adjust);
+    auto retto = uc_pop<uintptr_t>(uc);
+    set_rip(uc, retto);
+    return retto;
+}
+
+static std::set<uintptr_t> visited;
+static std::map<std::string, size_t> insn_count;
+static std::set<uintptr_t> call_targets;
 
 static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* user_data) {
-    static std::set<uintptr_t> visited;
     PeEmulation* ctx = (PeEmulation*)user_data;
 
     /*uc_reg_read(uc, UC_X86_REG_EFLAGS, &ctx->m_InitReg.EFlags);
-	ctx->m_InitReg.EFlags |= (1 << 8);
-	uc_reg_write(uc, UC_X86_REG_EFLAGS, &ctx->m_InitReg.EFlags);*/
+    ctx->m_InitReg.EFlags |= (1 << 8);
+    uc_reg_write(uc, UC_X86_REG_EFLAGS, &ctx->m_InitReg.EFlags);*/
 
     ctx->FlushMemMapping();
 
     if (ctx->m_Disassemble) {
+        const uint64_t virtualBase = ctx->NormaliseBase(address);
         mem::region rr(ctx->m_ImageBase, ctx->m_ImageEnd - ctx->m_ImageBase);
         auto ripadd = [&](const std::string& str, uintptr_t rip) {
             if (~pystring::find(str, "[rip ")) {
-                auto splut = preg_split(" ([-+]) ", str, MAXINT, PREG_SPLIT_DELIM_CAPTURE);
+                auto splut = preg_split(" ([-+]) ", pystring::rstrip(str, "]"), MAXINT, PREG_SPLIT_DELIM_CAPTURE);
                 if (splut.size() == 3) {
                     return fmt::format("[rel {:#x}]", rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
                 }
@@ -718,10 +794,8 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
             return str;
         };
 
-        static std::map<std::string, size_t> insn_count;
-        static std::set<uintptr_t> call_targets;
         auto [it, suc] = visited.emplace(address);
-        if (suc) {
+        if (1 || suc) {
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
 
@@ -731,10 +805,9 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
             int64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
 
-            uint64_t virtualBase = ctx->NormaliseBase(address);
-            uint8_t* code        = codeBuffer;
-            size_t codeSize      = size;
-            auto count           = cs_disasm(ctx->m_cs, code, codeSize, virtualBase, 0, &insn);
+            uint8_t* code   = codeBuffer;
+            size_t codeSize = size;
+            auto count      = cs_disasm(ctx->m_cs, code, codeSize, virtualBase, 0, &insn);
             if (count) {
                 int ii = 0;
 
@@ -749,35 +822,6 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
 
                 op_string = preg_replace(" ([-+]) ", R"($1)", op_string.c_str());
 
-                op_string = regex_replace(op_string, std::regex(R"(\b0x14[0-9a-fA-F]{7})"), [=](const std::smatch& m) {
-                    auto match = m.str();
-                    auto index = m.position();
-                    std::string prefix(m.str());
-                    prefix += ":";
-
-                    // TODO: these won't work if base is not 0x140000000
-                    if (auto _addr = asQword(match.c_str(), 16)) {
-                        uintptr_t addr      = *_addr;
-                        uintptr_t next_addr = 0;
-
-                        while (UC_ERR_OK == uc_mem_read(ctx->m_uc, addr, &next_addr, 8)) {
-                            if (auto it = megaFuncFull.find(ctx->NormaliseBase(addr, 0)); it != megaFuncFull.end()) {
-                                return fmt::format("{}{}", prefix, it->second);
-                            }
-
-                            std::wstring DllName;
-                            FakeAPI_t* api = nullptr;
-                            if (ctx->FindAPIByAddress(addr, DllName, &api)) {
-                                return fmt::format("{}{}!{}", prefix, narrow(DllName), api->ProcedureName);
-                            }
-
-                            prefix += "&";
-                            addr = next_addr;
-                        }
-                    }
-                    return match;
-                });
-
                 if (ctx->m_SkipSecondCall || ctx->m_SkipFourthCall) {
                     if (!strcmp(insn[ii].mnemonic, "call")) {
                         char* errch      = NULL;
@@ -790,9 +834,11 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         auto [iter, inserted] = call_targets.emplace(target);
                         if (inserted) {
                             ctx->m_Calls.emplace_back(ctx->NormaliseBase(address, 0), ctx->NormaliseBase(address + insn[ii].size + mem::pointer(code - 4).as<int32_t&>(), 0));
+                            if (megafunc)
+                                op_string = megafunc->Lookup(target);
                             auto& call_count = insn_count[insn[ii].mnemonic];
                             call_count       = call_count + 1;
-                            *outs << fmt::format("insn \"{}\" used {} times with unique target\n", insn[ii].mnemonic, call_count);
+                            *outs << fmt::format("{} {} used {} times with unique target\n", insn[ii].mnemonic, op_string, call_count);
                             if ((ctx->m_SkipSecondCall && call_count == 2)) {
                                 *outs << "skipping call " << call_count << " to " << op_string << "\n";
                                 advance_rip(uc, 5);
@@ -808,34 +854,322 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         }
                     }
                 }
+                {
+                    auto op_string2 = regex_replace(op_string, std::regex(R"(\b0x14[0-9a-fA-F]{7})"), [=](const std::smatch& m) {
+                        auto match = m.str();
+                        auto index = m.position();
+                        std::string prefix(m.str());
+                        prefix += ":";
+
+                        // TODO: these won't work if base is not 0x140000000
+                        if (auto _addr = asQword(match.c_str(), 16)) {
+                            uintptr_t addr      = *_addr;
+                            uintptr_t next_addr = 0;
+
+                            while (UC_ERR_OK == uc_mem_read(ctx->m_uc, addr, &next_addr, 8)) {
+                                if (auto it = megaFuncNames.find(ctx->NormaliseBase(addr, 0)); it != megaFuncNames.end()) {
+                                    return fmt::format("{}{}", prefix, it->second);
+                                }
+                                if (megafunc && megafunc->Contains(ctx->NormaliseBase(addr, 0))) {
+                                    return pystring::rstrip(megafunc->Lookup(ctx->NormaliseBase(addr, 0)));
+                                }
+
+                                std::wstring DllName;
+                                FakeAPI_t* api = nullptr;
+                                if (ctx->FindAPIByAddress(addr, DllName, &api)) {
+                                    return fmt::format("{}{}!{}", prefix, narrow(DllName), api->ProcedureName);
+                                }
+
+                                prefix += "&";
+                                addr = next_addr;
+                            }
+                        }
+                        return match;
+                    });
+
+                    std::stringstream region2;
+                    if (ctx->FindAddressInRegion(address, region2)) {
+                        if (megafunc)
+                            *outs << megafunc->Lookup(virtualBase - 0x140000000) << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string2 << "\n";
+                        else
+                            *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string2 << "\n";
+                    } else {
+                        *outs << std::hex << virtualBase << "\t\t" << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string2 << "\n";
+                    }
+                    cs_free(insn, count);
+                }
                 if (ctx->m_History) {
-					static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
-                    FuncTailInsn fti;
-                    fti.ea(ctx->NormaliseBase(address))
-                        .text(fmt::format("{} {}", insn[ii].mnemonic, op_string))
-                        .size(size)
-                        .code(std::string((char*)codeBuffer, size))
-                        .mnemonic(insn[ii].mnemonic)
-                        .operands(op_string);
-                    history.push_back(fmt::format("{} {}", insn[ii].mnemonic, op_string));
+                    static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
+                    if (!pystring::startswith(insn[ii].mnemonic, "nop")) {
+                        FuncTailInsn fti;
+                        fti.ea(virtualBase)
+                            .text(fmt::format("{} {}", insn[ii].mnemonic, op_string))
+                            .size(size)
+                            .code(std::string((char*)codeBuffer, size))
+                            .mnemonic(insn[ii].mnemonic)
+                            .operands(op_string);
+
+                        //history.push_back(fmt::format("{} {}", insn[ii].mnemonic, op_string));
+                        history.push_back(fti);
+                    }
+
                     group_t capture_groups;
-                    if (multimatch(history, {
-                                                R"(push rbp)",
-                                                R"(lea rbp, \[rel ({jtarget}[::address::])\])",
-                                                R"(xchg qword ptr \[rsp\], rbp)",
-                                                R"(jmp ({ctarget}[::address::]))",
-                                            },
-                                   capture_groups, '$')) {
+                    map_fti insn_groups;
+                    vector_fti insn_list;
+                    if (1 && multimatch(history, {
+                                                     R"(push rbp)",
+                                                     R"(lea rbp, \[rel ({jtarget}[::address::]))",
+                                                     R"(xchg qword ptr \[rsp\], rbp)",
+                                                     R"(jmp ({ctarget}[::address::]))",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: call-jmp");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks) {
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 11)
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                            else {
+                                mbs(chunk.front().ea())
+                                    .call(parseUint(capture_groups["ctarget"][0], 16))
+                                    .jmp(parseUint(capture_groups["jtarget"][0], 16));
+                                break;
+                            }
+                        }
+
+#ifdef REVISIT_OBFU
                         // this is really:  `call ctarget` `jmp jtarget`, and
                         // we need a way to trigger our "call counter"... lets
                         // use some temporary memory as a trampoline-ish device:
+                        set_rip(ctx->m_uc, scratch);
                         scratch = mbs(scratch)
-                            .nop(1)
-                            .call(parseUint(capture_groups["ctarget"][0], 16, 0))
-                            .jmp(parseUint(capture_groups["jtarget"][0], 16, 0));
+                                      .nop(1)
+                                      .call(parseUint(capture_groups["ctarget"][0], 16))
+                                      .jmp(parseUint(capture_groups["jtarget"][0], 16))
+                                      .as<uintptr_t>();
                         adjust_rsp(ctx->m_uc, +8);
-                        set_rip(ctx->m_uc, ctx->m_ImageEnd + 0x100);
+                        return;
+#endif
                     }
+
+                    //LOG("chunk: {}", pystring::join("; ", _::map2(chunk, [](const auto& ft) { return ft.text(); })));
+                    if (1 && multimatch(history, {R"(push rbp)",
+                                                  R"(movabs rbp, ({raxtarget}[::address::]))",
+                                                  R"(xchg qword ptr \[rsp\], rbp)",
+                                                  R"(push ({rax}[::r64-8::]))",
+                                                  R"(push ({rcx}[::r64-8::]))",
+                                                  R"(mov ${rax}, qword ptr \[rsp\+0x10\])",
+                                                  R"(movabs ${rcx}, ({rcxtarget}[::address::]))",
+                                                  R"(({cmov}cmov\w+) ${rax}, ${rcx})",
+                                                  R"(mov qword ptr \[rsp\+0x10\], ${rax})",
+                                                  R"(pop ${rcx})",
+                                                  R"(pop ${rax})",
+                                                  R"(ret)"},
+                                        capture_groups, insn_groups, insn_list, '$')) {
+                        LOG("multimatch: mini-cmov");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks) {
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 11)
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                            else {
+                                auto rax_target = asQwordO(_::firstOpt(capture_groups["raxtarget"]), 16);
+                                auto rcx_target = asQwordO(_::firstOpt(capture_groups["rcxtarget"]), 16);
+                                if (auto cmov_insn = _::firstOpt(insn_groups["cmov"]); cmov_insn && rax_target && rcx_target) {
+                                    auto cmov_addr = cmov_insn->ea();
+                                    auto condition = (cmov_insn->code()[2] & 0x0f) ^ 0x01;
+
+                                    //auto condition = mbs(cmov_addr).cmovcc();
+                                    LOG("cmov: {} {:x} condition: {:x}", cmov_insn->text(), cmov_insn->ea(), condition);
+                                    HexDump::dumpBytesAsHex(*outs, cmov_insn->code());
+                                    mbs(chunk.front().ea())
+                                        .jcc(*rax_target, condition)  // flip condition to negative proposition to match un-obfu code
+                                        .jmp(*rcx_target)
+                                        .db(0xCC);
+
+                                    // revisit the modified code to ensure everything is ok
+                                    //LOG("setting rip to {:x}", scratch);
+#if REVISIT_OBFU
+                                    visited.erase(chunk.front().ea());
+                                    set_rip(ctx->m_uc, scratch);
+                                    scratch = mbs(scratch)
+                                                  .nop(1)
+                                                  .jmp(chunk.front().ea())
+                                                  .as<uintptr_t>();
+                                    //LOG("setting scratch to {:x}", scratch);
+                                    adjust_rsp(ctx->m_uc, +0x10);
+                                    return;
+#endif
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (1 && multimatch(history, {
+                                                     // push rbp
+                                                     // lea  rbp, [rel 0x144698cef (ArxanHelper_0)]
+                                                     // xchg qword ptr [rsp], rbp
+                                                     // ret
+                                                     R"(push rbp)",
+                                                     R"(lea rbp, \[rel ({jtarget}[::address::]))",
+                                                     R"(xchg qword ptr \[rsp\], rbp)",
+                                                     R"(ret)",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: jmp");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks) {
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 5)
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                            else {
+                                mbs(chunk.front().ea())
+                                    .jmp(parseUint(capture_groups["jtarget"][0], 16))
+                                    .db(0xCC);
+                                break;
+                            }
+                        }
+
+#ifdef REVISIT_OBFU
+                        // this is really:  `call ctarget` `jmp jtarget`, and
+                        // we need a way to trigger our "call counter"... lets
+                        // use some temporary memory as a trampoline-ish device:
+                        set_rip(ctx->m_uc, scratch);
+                        scratch = mbs(scratch)
+                                      .nop(1)
+                                      .call(parseUint(capture_groups["ctarget"][0], 16))
+                                      .jmp(parseUint(capture_groups["jtarget"][0], 16))
+                                      .as<uintptr_t>();
+                        adjust_rsp(ctx->m_uc, +8);
+                        return;
+#endif
+                    }
+                    if (1 && multimatch(history, {
+                                                     R"(mov qword ptr \[rsp-8\], [::r64-8::])",
+                                                     R"(lea rsp, \[rsp-8\])",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: push rbp");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks)
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                        for (auto chunk : chunks) {
+                            mbs(chunk.front().ea())
+                                .push(0xf & (chunk.front().code()[2] & ~0x44) >> 3)
+                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            break;
+                        }
+                    }
+                    if (1 && multimatch(history, {
+                                                     R"(lea rsp, \[rsp-8\])",
+                                                     R"(mov qword ptr \[rsp\], [::r64-8::])",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: push rbp");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks)
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                        for (auto chunk : chunks) {
+                            mbs(chunk.front().ea())
+                                .push(0xf & (insn_list[1].code()[2]) >> 3)
+                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            break;
+                        }
+                    }
+                    if (1 && multimatch(history, {
+                                                     R"(lea rsp, \[rsp\+8\])",
+                                                     R"(mov ({rline}[::r64-8::]), qword ptr \[rsp-8\])",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: pop rbp1");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks)
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                        for (auto chunk : chunks) {
+                            mbs(chunk.front().ea())
+                                //.push(0xf & (insn_list[1].code()[2]) >> 3)
+                                // [ ((nassemble('mov {}, qword [rsp-8]'.format(r))[0]) & ~0x48) << 1 | ((nassemble('mov {}, qword [rsp-8]'.format(r))[2]) & ~0x44) >> 3  for r in regs]
+                                .pop(0xf & ((_::first(insn_groups["rline"]).code()[2] & ~0x44) >> 3))
+                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            break;
+                        }
+                    }
+                    if (1 && multimatch(history, {
+                                                     R"(mov ({rline}[::r64-8::]), qword ptr \[rsp\])",
+                                                     R"(lea rsp, \[rsp\+8\])",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: pop rbp2");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks)
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                        for (auto chunk : chunks) {
+                            mbs(chunk.front().ea())
+                                .pop(0xf & ((_::first(insn_groups["rline"]).code()[2] & ~0x44) >> 3))
+                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            break;
+                        }
+                    }
+                    if (1 && multimatch(history, {
+
+                                                     R"(lea rsp, \[rsp\+8\])",
+                                                     R"(jmp qword ptr \[rsp-8\])",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: ret");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks)
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                        for (auto chunk : chunks) {
+                            mbs(chunk.front().ea())
+                                .db(0xc3)
+                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            break;
+                        }
+                    }
+
                     if (0 && multimatch(history, {
                                                      R"(jmp .*)",
                                                      R"(mov eax, dword ptr \[rip\+.*])",
@@ -862,20 +1196,14 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                                      //R"(xchg \[rsp], rbp)",
                                                      //R"(retn?)",
                                                  },
-                                        capture_groups, '^')) {
+                                        capture_groups, insn_groups, insn_list, '^')) {
                         for (auto& [key, values] : capture_groups) {
                             *outs << "capture group: " << key << ": " << _::join(values, ", ") << std::endl;
                         }
                     }
                 }
-
-                std::stringstream region2;
-                if (ctx->FindAddressInRegion(address, region2)) {
-                    *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string << "\n";
-                } else {
-                    *outs << std::hex << virtualBase << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << insn[ii].op_str << "\n";
-                }
-                cs_free(insn, count);
+                //quick_test_matched: mov qword ptr \[rsp-8\], (?:\br(?:(?:[a-d])x|(?:[sb])p|(?:[sd])i)\b);lea rsp, \[rsp-8\]
+                //quick_test_matched: movupd xmmword ptr [rsp+0xb0], xmm12;movupd xmmword ptr [rsp+0xc0], xmm5;movupd xmmword ptr [rsp+0xd0], xmm8;movupd xmmword ptr [rsp+0xe0], xmm6;movupd xmmword ptr [rsp+0xf0], xmm15;push 0x10;test rsp, 0xf;jne 0x14449297d;sub rsp, 8;jmp 0x14394803d;push rbp;lea rbp, [rel 0x1433eab1e];xchg qword ptr [rsp], rbp;jmp 0x142fd556b;mov qword ptr [rsp-8], rbp;lea rsp, [rsp-8]
             }
         }
     }
@@ -960,7 +1288,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             if (ctx->FindAddressInRegion(rip, region2))
                 *outs << "UC_MEM_WRITE_PROT rip at " << region2.str() << "\n";
             else
-                *outs << "UC_MEM_WRITE_PROT rip at " << rip << "\n";
+                *outs << "UC_MEM_WRITE_PROT rip at " << ctx->NormaliseBase(rip) << "\n";
 
             //return true;
             uc_emu_stop(uc);
@@ -974,13 +1302,13 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             if (ctx->FindAddressInRegion(address, region))
                 *outs << "UC_MEM_FETCH_UNMAPPED from " << region.str() << "\n";
             else
-                *outs << "UC_MEM_FETCH_UNMAPPED from " << std::hex << address << std::dec << "\n";
+                *outs << "UC_MEM_FETCH_UNMAPPED from " << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
 
             std::stringstream region2;
             if (ctx->FindAddressInRegion(rip, region2))
                 *outs << "UC_MEM_FETCH_UNMAPPED rip at " << region2.str() << "\n";
             else
-                *outs << "UC_MEM_FETCH_UNMAPPED rip at " << std::hex << rip << std::dec << "\n";
+                *outs << "UC_MEM_FETCH_UNMAPPED rip at " << std::hex << ctx->NormaliseBase(rip) << std::dec << "\n";
 
             //return true;
             uc_emu_stop(uc);
@@ -1000,7 +1328,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             if (ctx->FindAddressInRegion(rip, region2))
                 *outs << "UC_MEM_READ_UNMAPPED rip at " << region2.str() << "\n";
             else
-                *outs << "UC_MEM_READ_UNMAPPED rip at " << rip << "\n";
+                *outs << "UC_MEM_READ_UNMAPPED rip at " << std::hex << rip << std::dec << "\n";
 
             //return true;
             uc_emu_stop(uc);
@@ -1182,7 +1510,7 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
         }
         ctx->m_LastRipModule = currentModule;
     } else if (currentModule != ctx->m_ImageBase) {
-        if (ctx->FindAPIByAddress(address, DllName, &api)) {
+        if (ctx->OldFindAPIByAddress(address, DllName, &api)) {
             _CrtDbgBreak();
         }
     }
@@ -2090,20 +2418,27 @@ int main(int argc, char** argv) {
         ctx.filename = filename;
         *outs << "Filename: " << ctx.filename << "\n";
 
-        auto fnJson = replace_extension(ctx.filename, "json");
+        auto fnJson = replace_extension(ctx.filename, ".funcs.json");
         if (fs::exists(fnJson)) {
+            megafunc = new MegaFunc(fnJson);
+            LOG_INFO(__FUNCTION__ ": reversed location 0x140001000 to: %s", megafunc->Lookup(0x100).c_str());
+        }
+
+        fnJson = replace_extension(ctx.filename, ".names.json");
+        if (fs::exists(fnJson)) {
+            LOG("reading names from {}", fnJson);
             std::ifstream infile(fnJson);
             json j;
             infile >> j;
 
             for (auto& [name, value] : j.items()) {
                 if (value.is_number() && !value.empty() /* && value[0].is_array() && value[0].size() == 2*/) {
-                    auto [it1, happy1] = megaFuncFull.emplace(value, name);
+                    auto [it1, happy1] = megaFuncNames.emplace(value, name);
                     //if (!happy1) {
                     //    auto existing = it1->second;
                     //    if (name != existing) {
                     //        //LOG_TRACE(__FUNCTION__ ": '0x14%07x' existing key '%s' clashed with '%s', overwriting.", start, existing.c_str(), name.c_str());
-                    //        megaFuncFull[start] = name;
+                    //        megaFuncNames[start] = name;
                     //    }
                     //}
                 }
@@ -2190,75 +2525,76 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (cmdl["patch-anti-tamper"]) {
-            virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
-            uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
-            mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
+        auto patch_anti_tamper = [&] {
+            if (cmdl["patch-anti-tamper"]) {
+                virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
+                uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
+                mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
 
-            auto normalise_base = [&](uintptr_t ea) {
-                return r.adjust_base(0x140000000, ea).as<uintptr_t>();
-            };
-            auto m_normalise_base = [&](mbs& ea) {
-                return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
-            };
-            // mem("55 48 81 ec b0").find("3b c2 0f 85", 128).add(4).rip(4).matches("c7 45", 2).dword()
-            // m = mem(FindInSegments("48 89 6c 24 f8 48 8d 64 24 f8")).find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45 64 01 00 00 00", 7)
-            // m = [x for x in [mem(ea).add(4).rip(4).is_match("c7 45 .. 01 00 00 00", 7) for ea in FindInSegments("3b c2 0f 85")] if not x.in_error()]
-            // clang-format off
+                auto normalise_base = [&](uintptr_t ea) {
+                    return r.adjust_base(0x140000000, ea).as<uintptr_t>();
+                };
+                auto m_normalise_base = [&](mbs& ea) {
+                    return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+                };
+                // mem("55 48 81 ec b0").find("3b c2 0f 85", 128).add(4).rip(4).matches("c7 45", 2).dword()
+                // m = mem(FindInSegments("48 89 6c 24 f8 48 8d 64 24 f8")).find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45 64 01 00 00 00", 7)
+                // m = [x for x in [mem(ea).add(4).rip(4).is_match("c7 45 .. 01 00 00 00", 7) for ea in FindInSegments("3b c2 0f 85")] if not x.in_error()]
+                // clang-format off
             mbs ptr1;
             scan_all_do(r, mem::pattern("3b c2 0f 85"), [&](auto ea) {
-				mbs(ea)
-					.add(4)
-					.rip(4)
-					.and_then([&](auto m) { 
-					        LOG("and then... {:x}", m_normalise_base(m));
-							// C7 45 64 01 00 00 00
-							m.if_find("c7 45 ?? 01 00 00 00", 0, [&](auto m) { 
-								 LOG("found ptr1 at {:#x}", m_normalise_base(m));
-								 ptr1 = m.add(7); 
-								 if (m.add(3).as<uint32_t&>() == 1) {
-									 m.add(3).as<uint32_t&>() = 0; 
-									 LOG("rewrite dword 1 to 0");
-								 }
-								 else
-									 LOG("dword was not 1 as we expected");
-							 }).or_else([&]{
-								 LOG("wasn't ptr1 at {:#x}", m_normalise_base(m));
-							 });
-					})
-					.or_else([] {
-						*outs << "couldn't find start of unpack\n";
-					});
-				});
-			#if 0
+                mbs(ea)
+                    .add(4)
+                    .rip(4)
+                    .and_then([&](auto m) { 
+                            LOG("and then... {:x}", m_normalise_base(m));
+                            // C7 45 64 01 00 00 00
+                            m.if_find("c7 45 ?? 01 00 00 00", 0, [&](auto m) { 
+                                 LOG("found ptr1 at {:#x}", m_normalise_base(m));
+                                 ptr1 = m.add(7); 
+                                 if (m.add(3).as<uint32_t&>() == 1) {
+                                     m.add(3).as<uint32_t&>() = 0; 
+                                     LOG("rewrite dword 1 to 0");
+                                 }
+                                 else
+                                     LOG("dword was not 1 as we expected");
+                             }).or_else([&]{
+                                 LOG("wasn't ptr1 at {:#x}", m_normalise_base(m));
+                             });
+                    })
+                    .or_else([] {
+                        *outs << "couldn't find start of unpack\n";
+                    });
+                });
+            #if 0
             scan_all_do(r, mem::pattern("55 48 81 ec ?? 00 00 00"), [&](auto ea) {
-				mbs(ea)
-					.if_find("3b c2 0f 85", 256, [&](auto m) {
-					    LOG("found 3b c2 05 85");
-						m.add(4)
-						 .rip(4)
-						 .if_find("c7 45", 0, [&](auto m) { 
-							 LOG("found ptr1 at {:#x}", m_normalise_base(m));
-							 ptr1 = m.add(7); 
-							 if (m.add(3).as<uint32_t&>() == 1) {
-								 m.add(3).as<uint32_t&>() = 0; 
-								 LOG("rewrite dword 1 to 0");
-							 }
-							 else
-								 LOG("dword was not 1 as we expected");
-						 }).or_else([]{
-							 *outs << "couldn't find ptr1\n";
-						 });
-					})
-					.or_else([] {
-						*outs << "couldn't find start of unpack\n";
-					});
-			});
-			#endif
+                mbs(ea)
+                    .if_find("3b c2 0f 85", 256, [&](auto m) {
+                        LOG("found 3b c2 05 85");
+                        m.add(4)
+                         .rip(4)
+                         .if_find("c7 45", 0, [&](auto m) { 
+                             LOG("found ptr1 at {:#x}", m_normalise_base(m));
+                             ptr1 = m.add(7); 
+                             if (m.add(3).as<uint32_t&>() == 1) {
+                                 m.add(3).as<uint32_t&>() = 0; 
+                                 LOG("rewrite dword 1 to 0");
+                             }
+                             else
+                                 LOG("dword was not 1 as we expected");
+                         }).or_else([]{
+                             *outs << "couldn't find ptr1\n";
+                         });
+                    })
+                    .or_else([] {
+                        *outs << "couldn't find start of unpack\n";
+                    });
+            });
+            #endif
 
             // for x in FindInSegments("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"):
             //     mem(x).add(21).rip(4).matches('c7 45 .. 00 00 00 00').jmp(y)
-			bool done = false;
+            bool done = false;
             scan_all_do(r,
                         mem::pattern("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"),
                         [&](uintptr_t ea) {
@@ -2269,74 +2605,77 @@ int main(int argc, char** argv) {
                                     *outs << "replacing ptr1 with jmp\n";
                                     ptr1.as<uint8_t&>()           = 0xe9;
                                     ptr1.offset(1).as<int32_t&>() = (int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5);
-									done = true;
+                                    //ptr1.write<uint8_t>(0xe9);
+                                    //ptr1.offset(1).write<int32_t>((int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5));
+                                    done = true;
                                     // return ptr1.jmp(m_normalise_base(m)).as<uintptr_t>();
                                 }
                             });
                         });
 
-			if (!done) {
-				LOG("couldn't complete patches, exiting.");
-				uc_close(uc);
-				cs_close(&ctx.m_cs);
-				ctx.thisProc.mmap().UnmapAllModules();
-				timer.ShowElapsed();
-				exit(1);
-			}
+            if (!done) {
+                LOG("couldn't complete patches, exiting.");
+                uc_close(uc);
+                cs_close(&ctx.m_cs);
+                ctx.thisProc.mmap().UnmapAllModules();
+                timer.ShowElapsed();
+                exit(1);
+            }
 
-			//if (auto p = GetPattern(S("01 b9 2f a9"), 
+            //if (auto p = GetPattern(S("01 b9 2f a9"), 
    //                             S("Launcher Check")).Sub(9).Rip())
-			//{
-			//	g_ByteManagement.ReturnValue(p.As<void*>(), (uint32_t)1, S("Launcher Check Patch"));
-			//}
+            //{
+            //  g_ByteManagement.ReturnValue(p.As<void*>(), (uint32_t)1, S("Launcher Check Patch"));
+            //}
 
-            // clang-format on
-            auto iteratee = [&](mem::pointer ea) -> uintptr_t {
-                LOG_ADDR_N(ea);
-                auto ptr = ea.add(0x58 - 9).rip(4);
-                LOG_ADDR_N(ptr);
-                auto pdw = ptr.add(3);
-                LOG_ADDR_N(pdw);
+                // clang-format on
+                auto iteratee = [&](mem::pointer ea) -> uintptr_t {
+                    LOG_ADDR_N(ea);
+                    auto ptr = ea.add(0x58 - 9).rip(4);
+                    LOG_ADDR_N(ptr);
+                    auto pdw = ptr.add(3);
+                    LOG_ADDR_N(pdw);
 
-                if (r.contains(pdw.as<uintptr_t>())) {
-                    auto& dw = pdw.as<int32_t&>();
-                    *outs << "dw: " << dw << std::endl;
-                    if (dw == 1) {
-                        dw = 0;
-                        *outs << "changed to " << dw << std::endl;
-                    }
-                } else
-                    *outs << "r didn't contain pdw";
-
-                auto pjz = ptr.add(0x26);
-                auto& w  = pjz.as<uint16_t&>();
-                *outs << "jnz opcode: " << std::hex << w << std::endl;
-                if (w == 0x840f) {
-                    w = 0xe990;
-                    *outs << "changed to " << w << std::endl;
-                }
-
-                auto ptr2 = ptr.add(0x26).add(2).rip(4);
-                LOG_ADDR_N(ptr2);
-                if (r.contains((ptr2.as<uintptr_t>()))) {
-                    if (ptr2.add(0).as<uint8_t&>() == 0x8b) {
-                        auto& a = ptr2.add(2).as<uint32_t&>();
-                        auto& b = ptr2.add(8).as<uint32_t&>();
-                        *outs << "hash: " << std::hex << a << " "
-                              << "correct_hash: " << b << std::endl;
-                        a = b + 6;
-                        *outs << "changed a to " << a << std::dec << std::endl;
+                    if (r.contains(pdw.as<uintptr_t>())) {
+                        auto& dw = pdw.as<int32_t&>();
+                        *outs << "dw: " << dw << std::endl;
+                        if (dw == 1) {
+                            dw = 0;
+                            *outs << "changed to " << dw << std::endl;
+                        }
                     } else
-                        *outs << "twin peaks didn't match" << std::endl;
-                }
-                return 0;
-            };
-            //mem::pattern p("55 48 81 ec b0");
-            //         if (auto found = mem::scan(p, r)) {
-            //             iteratee(found);
-            //         }
-            uc_mem_write(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
-        }
+                        *outs << "r didn't contain pdw";
+
+                    auto pjz = ptr.add(0x26);
+                    auto& w  = pjz.as<uint16_t&>();
+                    *outs << "jnz opcode: " << std::hex << w << std::endl;
+                    if (w == 0x840f) {
+                        w = 0xe990;
+                        *outs << "changed to " << w << std::endl;
+                    }
+
+                    auto ptr2 = ptr.add(0x26).add(2).rip(4);
+                    LOG_ADDR_N(ptr2);
+                    if (r.contains((ptr2.as<uintptr_t>()))) {
+                        if (ptr2.add(0).as<uint8_t&>() == 0x8b) {
+                            auto& a = ptr2.add(2).as<uint32_t&>();
+                            auto& b = ptr2.add(8).as<uint32_t&>();
+                            *outs << "hash: " << std::hex << a << " "
+                                  << "correct_hash: " << b << std::endl;
+                            a = b + 6;
+                            *outs << "changed a to " << a << std::dec << std::endl;
+                        } else
+                            *outs << "twin peaks didn't match" << std::endl;
+                    }
+                    return 0;
+                };
+                //mem::pattern p("55 48 81 ec b0");
+                //         if (auto found = mem::scan(p, r)) {
+                //             iteratee(found);
+                //         }
+                uc_mem_write(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
+            }
+        };
 
         // 335.2
         // mbs(0x14384BE32).jmp(0x143612F8C);  // skip tamper and segment check
@@ -2387,7 +2726,33 @@ int main(int argc, char** argv) {
                 }
             }
 
-            err = uc_emu_start(uc, ctx.m_ExecuteFromRip /*prologue_address*/, /*0x14334099C */ /*prologue_address + sizeof(prologue_bytes) - 1 */ ctx.m_ImageEnd, 0, 0);
+            err = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
+            patch_anti_tamper();
+            LOG("-------------------- restart ----------------------");
+            uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
+            uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
+            uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
+            uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
+            uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
+            uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
+            uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
+            uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
+            uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
+            uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
+            uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
+            uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
+            uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
+            uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
+            uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
+            uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+            visited.clear();
+            insn_count.clear();
+            call_targets.clear();
+            ctx.m_Calls.clear();
+            ctx.m_SkipSecondCall = cmdl["skip-second-call"];
+            ctx.m_SkipFourthCall = cmdl["skip-4th-call"];
+
+            err = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
 
             if (ctx.m_LastException != STATUS_SUCCESS) {
                 auto except         = ctx.m_LastException;
@@ -2396,7 +2761,9 @@ int main(int argc, char** argv) {
             } else {
                 break;
             }
+
             *outs << "Looping...\n";
+            break;
         }
         uint64_t result_rsp = 0;
         uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
@@ -2432,105 +2799,105 @@ int main(int argc, char** argv) {
 
             /*
         // Copy of StackBalance to create proper stack for execution of code (prologue_address)
-		
-			140001000  6A 01                                         push    1
-			140001002  6A 02                                         push    2
-			140001004  6A 03                                         push    3
-			140001006  6A 04                                         push    4
-			140001008
-			140001008                                TheJudge:
-			140001008  E8 01 00 00 00                                call    TheWitch
-			14000100D  CC                                            int     3
-			14000100E
-			14000100E
-			14000100E                                TheWitch:
-			14000100E  E8 01 00 00 00                                call    TheCorpsegrinder
-			140001013  CC                                            int     3
-			140001014
-			140001014
-			140001014                                TheCorpsegrinder:
-			140001014  E8 01 00 00 00                                call    TheBalancer
-			140001019  CC                                            int     3
-			14000101A
-			14000101A
-			14000101A                                TheBalancer:
-			14000101A  41 50                                         push    r8
-			14000101C  41 55                                         push    r13
-			14000101E  41 54                                         push    r12
-			140001020  41 57                                         push    r15
-			140001022  56                                            push    rsi
-			140001023  52                                            push    rdx
-			140001024  53                                            push    rbx
-			140001025  41 51                                         push    r9
-			140001027  50                                            push    rax
-			140001028  41 56                                         push    r14
-			14000102A  41 52                                         push    r10
-			14000102C  57                                            push    rdi
-			14000102D  41 53                                         push    r11
-			14000102F  48 8D A4 24 00 FF FF FF                       lea     rsp, [rsp-100h]
-			140001037  66 44 0F 11 3C 24                             movupd  xmmword ptr [rsp], xmm15
-			14000103D  66 0F 11 7C 24 10                             movupd  xmmword ptr [rsp+10h], xmm7
-			140001043  66 0F 11 5C 24 20                             movupd  xmmword ptr [rsp+20h], xmm3
-			140001049  66 44 0F 11 54 24 30                          movupd  xmmword ptr [rsp+30h], xmm10
-			140001050  66 0F 11 74 24 40                             movupd  xmmword ptr [rsp+40h], xmm6
-			140001056  66 0F 11 6C 24 50                             movupd  xmmword ptr [rsp+50h], xmm5
-			14000105C  66 0F 11 4C 24 60                             movupd  xmmword ptr [rsp+60h], xmm1
-			140001062  66 44 0F 11 4C 24 70                          movupd  xmmword ptr [rsp+70h], xmm9
-			140001069  66 44 0F 11 B4 24 80 00 00 00                 movupd  xmmword ptr [rsp+80h], xmm14
-			140001073  66 44 0F 11 84 24 90 00 00 00                 movupd  xmmword ptr [rsp+90h], xmm8
-			14000107D  66 44 0F 11 A4 24 A0 00 00 00                 movupd  xmmword ptr [rsp+0A0h], xmm12
-			140001087  66 0F 11 94 24 B0 00 00 00                    movupd  xmmword ptr [rsp+0B0h], xmm2
-			140001090  66 44 0F 11 9C 24 C0 00 00 00                 movupd  xmmword ptr [rsp+0C0h], xmm11
-			14000109A  66 0F 11 84 24 D0 00 00 00                    movupd  xmmword ptr [rsp+0D0h], xmm0
-			1400010A3  66 44 0F 11 AC 24 E0 00 00 00                 movupd  xmmword ptr [rsp+0E0h], xmm13
-			1400010AD  66 0F 11 A4 24 F0 00 00 00                    movupd  xmmword ptr [rsp+0F0h], xmm4
-			1400010AD
-			1400010B6  6A 10                                         push    10h
-			1400010B8  48 F7 C4 0F 00 00 00                          test    rsp, 0Fh
-			1400010BF  75 02                                         jnz     short skip_balance
-			1400010C1  6A 18                                         push    18h
-			1400010C3
-			1400010C3                                skip_balance:
-			1400010C3  48 83 EC 08                                   sub     rsp, 8
-			           48 89 e5                                      mov     rbp, rsp
-			1400010C7  FF 15 A2 00 00 00                             call    qword ptr cs:TheChecker
-			1400010CD  48 03 64 24 08                                add     rsp, [rsp+8]
-			1400010D2  66 44 0F 10 3C 24                             movupd  xmm15, xmmword ptr [rsp]
-			1400010D8  66 0F 10 7C 24 10                             movupd  xmm7, xmmword ptr [rsp+10h]
-			1400010DE  66 0F 10 5C 24 20                             movupd  xmm3, xmmword ptr [rsp+20h]
-			1400010E4  66 44 0F 10 54 24 30                          movupd  xmm10, xmmword ptr [rsp+30h]
-			1400010EB  66 0F 10 74 24 40                             movupd  xmm6, xmmword ptr [rsp+40h]
-			1400010F1  66 0F 10 6C 24 50                             movupd  xmm5, xmmword ptr [rsp+50h]
-			1400010F7  66 0F 10 4C 24 60                             movupd  xmm1, xmmword ptr [rsp+60h]
-			1400010FD  66 44 0F 10 4C 24 70                          movupd  xmm9, xmmword ptr [rsp+70h]
-			140001104  66 44 0F 10 B4 24 80 00 00 00                 movupd  xmm14, xmmword ptr [rsp+80h]
-			14000110E  66 44 0F 10 84 24 90 00 00 00                 movupd  xmm8, xmmword ptr [rsp+90h]
-			140001118  66 44 0F 10 A4 24 A0 00 00 00                 movupd  xmm12, xmmword ptr [rsp+0A0h]
-			140001122  66 0F 10 94 24 B0 00 00 00                    movupd  xmm2, xmmword ptr [rsp+0B0h]
-			14000112B  66 44 0F 10 9C 24 C0 00 00 00                 movupd  xmm11, xmmword ptr [rsp+0C0h]
-			140001135  66 0F 10 84 24 D0 00 00 00                    movupd  xmm0, xmmword ptr [rsp+0D0h]
-			14000113E  66 44 0F 10 AC 24 E0 00 00 00                 movupd  xmm13, xmmword ptr [rsp+0E0h]
-			140001148  66 0F 10 A4 24 F0 00 00 00                    movupd  xmm4, xmmword ptr [rsp+0F0h]
-			140001151  48 8D A4 24 00 01 00 00                       lea     rsp, [rsp+100h]
-			140001159  41 5B                                         pop     r11
-			14000115B  5F                                            pop     rdi
-			14000115C  41 5A                                         pop     r10
-			14000115E  41 5E                                         pop     r14
-			140001160  58                                            pop     rax
-			140001161
-			140001161  41 59                                         pop     r9
-			140001163  5B                                            pop     rbx
-			140001164  5A                                            pop     rdx
-			140001165  5E                                            pop     rsi
-			140001166  41 5F                                         pop     r15
-			140001168  41 5C                                         pop     r12
-			14000116A  41 5D                                         pop     r13
-			14000116C  41 58                                         pop     r8
-			14000116E  C3                                            retn
-			14000116E
-			14000116F                                TheChecker:
-			14000116F  00 00 00 00 00 00 00 00                       dq    0
-		*/
+        
+            140001000  6A 01                                         push    1
+            140001002  6A 02                                         push    2
+            140001004  6A 03                                         push    3
+            140001006  6A 04                                         push    4
+            140001008
+            140001008                                TheJudge:
+            140001008  E8 01 00 00 00                                call    TheWitch
+            14000100D  CC                                            int     3
+            14000100E
+            14000100E
+            14000100E                                TheWitch:
+            14000100E  E8 01 00 00 00                                call    TheCorpsegrinder
+            140001013  CC                                            int     3
+            140001014
+            140001014
+            140001014                                TheCorpsegrinder:
+            140001014  E8 01 00 00 00                                call    TheBalancer
+            140001019  CC                                            int     3
+            14000101A
+            14000101A
+            14000101A                                TheBalancer:
+            14000101A  41 50                                         push    r8
+            14000101C  41 55                                         push    r13
+            14000101E  41 54                                         push    r12
+            140001020  41 57                                         push    r15
+            140001022  56                                            push    rsi
+            140001023  52                                            push    rdx
+            140001024  53                                            push    rbx
+            140001025  41 51                                         push    r9
+            140001027  50                                            push    rax
+            140001028  41 56                                         push    r14
+            14000102A  41 52                                         push    r10
+            14000102C  57                                            push    rdi
+            14000102D  41 53                                         push    r11
+            14000102F  48 8D A4 24 00 FF FF FF                       lea     rsp, [rsp-100h]
+            140001037  66 44 0F 11 3C 24                             movupd  xmmword ptr [rsp], xmm15
+            14000103D  66 0F 11 7C 24 10                             movupd  xmmword ptr [rsp+10h], xmm7
+            140001043  66 0F 11 5C 24 20                             movupd  xmmword ptr [rsp+20h], xmm3
+            140001049  66 44 0F 11 54 24 30                          movupd  xmmword ptr [rsp+30h], xmm10
+            140001050  66 0F 11 74 24 40                             movupd  xmmword ptr [rsp+40h], xmm6
+            140001056  66 0F 11 6C 24 50                             movupd  xmmword ptr [rsp+50h], xmm5
+            14000105C  66 0F 11 4C 24 60                             movupd  xmmword ptr [rsp+60h], xmm1
+            140001062  66 44 0F 11 4C 24 70                          movupd  xmmword ptr [rsp+70h], xmm9
+            140001069  66 44 0F 11 B4 24 80 00 00 00                 movupd  xmmword ptr [rsp+80h], xmm14
+            140001073  66 44 0F 11 84 24 90 00 00 00                 movupd  xmmword ptr [rsp+90h], xmm8
+            14000107D  66 44 0F 11 A4 24 A0 00 00 00                 movupd  xmmword ptr [rsp+0A0h], xmm12
+            140001087  66 0F 11 94 24 B0 00 00 00                    movupd  xmmword ptr [rsp+0B0h], xmm2
+            140001090  66 44 0F 11 9C 24 C0 00 00 00                 movupd  xmmword ptr [rsp+0C0h], xmm11
+            14000109A  66 0F 11 84 24 D0 00 00 00                    movupd  xmmword ptr [rsp+0D0h], xmm0
+            1400010A3  66 44 0F 11 AC 24 E0 00 00 00                 movupd  xmmword ptr [rsp+0E0h], xmm13
+            1400010AD  66 0F 11 A4 24 F0 00 00 00                    movupd  xmmword ptr [rsp+0F0h], xmm4
+            1400010AD
+            1400010B6  6A 10                                         push    10h
+            1400010B8  48 F7 C4 0F 00 00 00                          test    rsp, 0Fh
+            1400010BF  75 02                                         jnz     short skip_balance
+            1400010C1  6A 18                                         push    18h
+            1400010C3
+            1400010C3                                skip_balance:
+            1400010C3  48 83 EC 08                                   sub     rsp, 8
+                       48 89 e5                                      mov     rbp, rsp
+            1400010C7  FF 15 A2 00 00 00                             call    qword ptr cs:TheChecker
+            1400010CD  48 03 64 24 08                                add     rsp, [rsp+8]
+            1400010D2  66 44 0F 10 3C 24                             movupd  xmm15, xmmword ptr [rsp]
+            1400010D8  66 0F 10 7C 24 10                             movupd  xmm7, xmmword ptr [rsp+10h]
+            1400010DE  66 0F 10 5C 24 20                             movupd  xmm3, xmmword ptr [rsp+20h]
+            1400010E4  66 44 0F 10 54 24 30                          movupd  xmm10, xmmword ptr [rsp+30h]
+            1400010EB  66 0F 10 74 24 40                             movupd  xmm6, xmmword ptr [rsp+40h]
+            1400010F1  66 0F 10 6C 24 50                             movupd  xmm5, xmmword ptr [rsp+50h]
+            1400010F7  66 0F 10 4C 24 60                             movupd  xmm1, xmmword ptr [rsp+60h]
+            1400010FD  66 44 0F 10 4C 24 70                          movupd  xmm9, xmmword ptr [rsp+70h]
+            140001104  66 44 0F 10 B4 24 80 00 00 00                 movupd  xmm14, xmmword ptr [rsp+80h]
+            14000110E  66 44 0F 10 84 24 90 00 00 00                 movupd  xmm8, xmmword ptr [rsp+90h]
+            140001118  66 44 0F 10 A4 24 A0 00 00 00                 movupd  xmm12, xmmword ptr [rsp+0A0h]
+            140001122  66 0F 10 94 24 B0 00 00 00                    movupd  xmm2, xmmword ptr [rsp+0B0h]
+            14000112B  66 44 0F 10 9C 24 C0 00 00 00                 movupd  xmm11, xmmword ptr [rsp+0C0h]
+            140001135  66 0F 10 84 24 D0 00 00 00                    movupd  xmm0, xmmword ptr [rsp+0D0h]
+            14000113E  66 44 0F 10 AC 24 E0 00 00 00                 movupd  xmm13, xmmword ptr [rsp+0E0h]
+            140001148  66 0F 10 A4 24 F0 00 00 00                    movupd  xmm4, xmmword ptr [rsp+0F0h]
+            140001151  48 8D A4 24 00 01 00 00                       lea     rsp, [rsp+100h]
+            140001159  41 5B                                         pop     r11
+            14000115B  5F                                            pop     rdi
+            14000115C  41 5A                                         pop     r10
+            14000115E  41 5E                                         pop     r14
+            140001160  58                                            pop     rax
+            140001161
+            140001161  41 59                                         pop     r9
+            140001163  5B                                            pop     rbx
+            140001164  5A                                            pop     rdx
+            140001165  5E                                            pop     rsi
+            140001166  41 5F                                         pop     r15
+            140001168  41 5C                                         pop     r12
+            14000116A  41 5D                                         pop     r13
+            14000116C  41 58                                         pop     r8
+            14000116E  C3                                            retn
+            14000116E
+            14000116F                                TheChecker:
+            14000116F  00 00 00 00 00 00 00 00                       dq    0
+        */
 
             unsigned char prologue_bytes[] = {
                 0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc,
@@ -2593,22 +2960,22 @@ int main(int argc, char** argv) {
 
             /*
 
-			Function: StackChecksumActual3_239
-			RSP: 0x4ff88
-			uc_emu_start stack: 140a5c90e 48: 0x4ffb8: 0x1
-			uc_emu_start stack: 140a5c90e 40: 0x4ffb0: 0x2
-			uc_emu_start stack: 140a5c90e 32: 0x4ffa8: 0x3
-			uc_emu_start stack: 140a5c90e 24: 0x4ffa0: 0x140cc3aaf
-			uc_emu_start stack: 140a5c90e 16: 0x4ff98: 0x143ea1e55
-			uc_emu_start stack: 140a5c90e 8: 0x4ff90: 0x143dcbfe2
-			uc_emu_start stack: 140a5c90e 0: 0x4ff88: 0x140001019
-			uc_emu_start stack: 140a5c90e -8: 0x4ff80: 0x0
-			uc_emu_start stack: 140a5c90e -16: 0x4ff78: 0x0
-			uc_emu_start stack: 140a5c90e -24: 0x4ff70: 0x0
-			uc_emu_start stack: 140a5c90e -32: 0x4ff68: 0x0
-			uc_emu_start stack: 140a5c90e -40: 0x4ff60: 0x0
-			uc_emu_start stack: 140a5c90e -48: 0x4ff58: 0x1
-		*/
+            Function: StackChecksumActual3_239
+            RSP: 0x4ff88
+            uc_emu_start stack: 140a5c90e 48: 0x4ffb8: 0x1
+            uc_emu_start stack: 140a5c90e 40: 0x4ffb0: 0x2
+            uc_emu_start stack: 140a5c90e 32: 0x4ffa8: 0x3
+            uc_emu_start stack: 140a5c90e 24: 0x4ffa0: 0x140cc3aaf
+            uc_emu_start stack: 140a5c90e 16: 0x4ff98: 0x143ea1e55
+            uc_emu_start stack: 140a5c90e 8: 0x4ff90: 0x143dcbfe2
+            uc_emu_start stack: 140a5c90e 0: 0x4ff88: 0x140001019
+            uc_emu_start stack: 140a5c90e -8: 0x4ff80: 0x0
+            uc_emu_start stack: 140a5c90e -16: 0x4ff78: 0x0
+            uc_emu_start stack: 140a5c90e -24: 0x4ff70: 0x0
+            uc_emu_start stack: 140a5c90e -32: 0x4ff68: 0x0
+            uc_emu_start stack: 140a5c90e -40: 0x4ff60: 0x0
+            uc_emu_start stack: 140a5c90e -48: 0x4ff58: 0x1
+        */
 
             *outs << "Function: " << ctx.filename << "\n";
             while (1) {
@@ -2731,12 +3098,11 @@ int main(int argc, char** argv) {
     }
 
     *outs << "flushing...\n";
-    std::string k;
-    std::cin >> k;
+    //std::string k;
+    //std::cin >> k;
     *outs << "should exit now" << std::endl;
-    exit(0);
 
-    outs->flush();
+    //outs->flush();
 
     return 0;
 }

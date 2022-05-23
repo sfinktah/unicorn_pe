@@ -158,6 +158,21 @@ namespace mem
             return *this;
         }
 
+        template <typename Func, typename... Args>
+        constexpr std::enable_if_t<!std::is_void_v<std::invoke_result_t<Func, pointer, Args...>>, pointer> 
+        invoke(Func&& func, Args&&... args) const
+        {
+			return std::forward<Func>(func)(*this, (args...));
+        }
+
+        template <typename Func, typename... Args>
+        constexpr std::enable_if_t<std::is_void_v<std::invoke_result_t<Func, pointer, Args...>>, pointer> 
+        invoke(Func&& func, Args&&... args) const
+        {
+			std::forward<Func>(func)(*this, (args...));
+            return *this;
+        }
+
 
         constexpr any_pointer any() const noexcept;
 

@@ -1,18 +1,24 @@
 #pragma once
 #include "helper.h"
 namespace _ {
-
-    // first/head
+	// lodash: return first element of array or undefined
     template <typename Container>
-    typename Container::iterator first(Container& container)
-    {
-        return container.begin();
+    typename Container::value_type first(const Container& container) {
+        return *container.cbegin();
+    }
+
+	// lodash: return first element of array or nullopt
+    template <typename Container>
+    typename std::optional<typename Container::value_type> firstOpt(const Container& container) {
+        if (container.cbegin() != container.cend()) {
+			return *container.begin();
+        }
+		return std::nullopt;
     }
 
     // first n elements
     template <typename ResultContainer, typename Container>
-    ResultContainer first(Container& container, int count)
-    {
+    ResultContainer first(Container& container, int count) {
         typename Container::iterator end = container.begin();
         std::advance(end, count);
         return ResultContainer(container.begin(), end);
@@ -22,8 +28,7 @@ namespace _ {
     /// <param name="container">The container.</param>
     /// <returns></returns>
     template <typename ResultContainer, typename Container>
-    ResultContainer first_jquery(Container& container)
-    {
+    ResultContainer first_jquery(Container& container) {
 
         ResultContainer result;
         for (auto i = container.begin(); i != container.end(); ++i) {
@@ -32,4 +37,4 @@ namespace _ {
         }
         return result;
     }
-}
+}  // namespace _

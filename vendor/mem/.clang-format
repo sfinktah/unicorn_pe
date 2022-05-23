@@ -4,7 +4,6 @@ AlignEscapedNewlines: Left
 AlignTrailingComments: true
 AllowShortCaseLabelsOnASingleLine: true
 AllowShortFunctionsOnASingleLine: None
-AlwaysBreakTemplateDeclarations: Yes
 
 BreakBeforeBraces: Custom
 BraceWrapping:

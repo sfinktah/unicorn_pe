@@ -158,6 +158,7 @@ public:
 	uintptr_t NormaliseBase(ULONG64 address, ULONG64 base = 0x140000000) const;
 
 	bool FindAddressInRegion(ULONG64 address, std::stringstream &RegionName);
+	bool OldFindAPIByAddress(ULONG64 address, std::wstring &DllName, FakeAPI_t **api);
 	bool FindAPIByAddress(ULONG64 address, std::wstring &DllName, FakeAPI_t **api);
 	bool FindSectionByAddress(ULONG64 address, FakeSection_t **section);
 	bool FindModuleByAddress(ULONG64 address, ULONG64 &DllBase);

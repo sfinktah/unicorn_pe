@@ -444,11 +444,11 @@ std::string regex_search(const std::string& pattern, const std::string& subject,
         std::regex r(pattern, options | (std::regex_constants::syntax_option_type)(ignoreCase ? std::regex_constants::icase : 0));
         std::smatch sm;
         if (std::regex_search(subject, sm, r)) {
-#ifdef _DEBUG
-            for (size_t i = 0; i < sm.size(); ++i) {
-                LOG("regex_search_match ({}): '{}'", i, sm.str(i));
-            }
-#endif
+//#ifdef _DEBUG
+//            for (size_t i = 0; i < sm.size(); ++i) {
+//                LOG("regex_search_match ({}): '{}'", i, sm.str(i));
+//            }
+//#endif
             return sm.str(sm.size() - 1);
             // return sm.str();
         }
@@ -465,32 +465,32 @@ std::string regex_search(const std::string& pattern, const std::string& subject,
     return "";
 }
 
-int64_t parseInt(const std::string& str, int base, int64_t defaultValue) {
-    std::size_t pos = -1;
-    try {
-        auto rv = std::stoll(str, &pos, base);
-        if (pos != str.length()) {
-            LOG_DEBUG(__FUNCTION__ ": pos != len (%llu, %llu) on %s", pos, str.length(), str.c_str());
-            return defaultValue;
-        }
-        return rv;
-    } catch (std::invalid_argument) {
-    } catch (std::out_of_range) {
-    }
-    return defaultValue;
-}
-
-int64_t parseInt(const std::string& str, int base) {
-    char* _     = nullptr;
-    __int64 ret = _strtoi64(str.c_str(), &_, base);
-    return ret;
-}
-
-int64_t parseInt(const std::wstring& str, int base) {
-    char* _     = nullptr;
-    __int64 ret = _strtoi64(narrow(str).c_str(), &_, base);
-    return ret;
-}
+//int64_t parseInt(const std::string& str, int base, int64_t defaultValue) {
+//    std::size_t pos = -1;
+//    try {
+//        auto rv = std::stoll(str, &pos, base);
+//        if (pos != str.length()) {
+//            LOG_DEBUG(__FUNCTION__ ": pos != len ({}, {}) on {}", pos, str.length(), str.c_str());
+//            return defaultValue;
+//        }
+//        return rv;
+//    } catch (std::invalid_argument) {
+//    } catch (std::out_of_range) {
+//    }
+//    return defaultValue;
+//}
+//
+//int64_t parseInt(const std::string& str, int base) {
+//    char* _     = nullptr;
+//    __int64 ret = _strtoi64(str.c_str(), &_, base);
+//    return ret;
+//}
+//
+//int64_t parseInt(const std::wstring& str, int base) {
+//    char* _     = nullptr;
+//    __int64 ret = _strtoi64(narrow(str).c_str(), &_, base);
+//    return ret;
+//}
 
 static const char fillchar = '=';
 static const std::string cvt =
@@ -591,6 +591,12 @@ void make_spread_folders(fs::path path) {
     }
 }
 
+std::optional<uint64_t> asQwordO(std::optional<std::string> optarg, int default_base) {
+    if (!optarg.has_value())
+		return std::nullopt;
+    return asQword(*optarg, default_base);
+}
+
 std::optional<uint64_t> asQword(const std::string& arg, int default_base) {
     uint64_t value = 0;
     std::optional<uint64_t> opt_value;
@@ -620,14 +626,14 @@ std::optional<uint64_t> asQword(const std::string& arg, int default_base) {
 
     if (auto match = regex_search("^-((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
         opt_value = parseIntOpt(match, 16);
-    else if (auto match = regex_search("^((?:0[xX])?[0-9a-fA-F]+$)", haystack); !match.empty())
+    else if (auto match = regex_search("^((?:0[xX])[0-9a-fA-F]+$)", haystack); !match.empty())
         opt_value = parseUintOpt(match, 16);
     else if (auto match = regex_search("^[0-9a-fA-F]+(?=h)$", haystack); !match.empty())
         opt_value = parseUintOpt(match, 16);
     else if (auto match = regex_search(R"(^exe\+(?:0[xX])?([0-9a-fA-F]+)$)", haystack); !match.empty())
         opt_value = parseUintOpt(match, 16);
     else
-        opt_value = parseUintOpt(match, default_base);
+        opt_value = parseUintOpt(haystack, default_base);
 
     if (!opt_value)
         return opt_value;

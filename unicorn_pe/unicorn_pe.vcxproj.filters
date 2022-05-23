@@ -51,6 +51,12 @@
     <ClCompile Include="multimatch.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="MegaFunc.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="FileUtils.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nativestructs.h">
@@ -84,6 +90,15 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="xrange.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="MegaFunc.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="Filesystem.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="FileUtils.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

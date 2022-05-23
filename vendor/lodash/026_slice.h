@@ -2,6 +2,12 @@
 #include "lodash_common.h"
 #include "helper.h"
 #include <climits>
+#include <array>
+#ifdef max
+#undef min
+#undef max
+#endif
+#include <gsl/gsl>
 #pragma once
 namespace _ {
     /** 
@@ -21,7 +27,7 @@ namespace _ {
      * \return Sequence Container
      */
     template <typename Container>
-    auto slice(const Container& container, long long begin = 0, long long end = LLONG_MAX) {
+    auto slice(const Container& container, intptr_t begin = 0, intptr_t end = LLONG_MAX) {
         std::vector<typename Container::value_type> result;
 
         const size_t len = std::size(container);
@@ -32,11 +38,11 @@ namespace _ {
         if (end < 1) end = len + end;
         if (begin < 0) begin = len + begin;
 
-        begin      = helper::clamp<long long>(begin, 0, len - 1);
-        end        = helper::clamp<long long>(end, begin, len);
+        begin      = helper::clamp<intptr_t>(begin, 0, len - 1);
+        end        = helper::clamp<intptr_t>(end, begin, len);
         auto count = end - begin;
         // paranoia?
-        count = helper::clamp<long long>(count, 0, len - begin);
+        count = helper::clamp<intptr_t>(count, 0, len - begin);
 
         if (count > 0)
             for (auto it = std::next(std::begin(container), (int)begin); count; count--, ++it) {
@@ -75,6 +81,43 @@ namespace _ {
         return result;
     }
 
+/* helper macro to fixup start/end slice values */
+#define ADJUST_INDICES(start, end, len) \
+    if (end > len)                      \
+        end = len;                      \
+    else if (end < 0) {                 \
+        end += len;                     \
+        if (end < 0)                    \
+            end = 0;                    \
+    }                                   \
+    if (start < 0) {                    \
+        start += len;                   \
+        if (start < 0)                  \
+            start = 0;                  \
+    }
+
+    template <typename Container>
+    std::vector<typename Container::value_type> pyslice(const Container& array, intptr_t start, intptr_t end) {
+        ADJUST_INDICES(start, end, (intptr_t)array.size());
+        if (start >= end) return {};
+        return std::vector<typename Container::value_type>(std::next(array.cbegin(), start), std::next(array.cbegin(), end - start));
+        // return std::vector<typename Container::value_type>(std::next(array.cbegin(), start), std::prev(array.cend(), array.size() - end));
+        //return array.substr(start, end - start);
+    }
+
+    template <int start = 0, int end = 0, typename Container>
+    constexpr auto pyslice_span(Container&& container) {
+        ADJUST_INDICES(start, end, (int)array.size());
+        //if constexpr (end > 0)
+        //{
+        return gsl::span(std::begin(std::forward<Container>(container)) + start, std::begin(std::forward<Container>(container)) + end);
+        //}
+        //else
+        //{
+        return gsl::span(std::begin(std::forward<Container>(container)) + start, std::end(std::forward<Container>(container)) + end);
+        //}
+    }
+
     /**
      * Creates an array of elements split into groups the length of `size`.
      * If `array` can't be split evenly, the final chunk will be the remaining
@@ -111,4 +154,42 @@ namespace _ {
         }
         return result;
     }
+
+    template <typename T, class _Predicate, typename R = typename T::value_type, typename itertype = T::const_iterator>
+    auto chunk_if(T& list, _Predicate __pred) {
+        std::vector<std::vector<R>> result;
+        if (list.empty())
+            return result;
+        auto iter1 = list.cbegin();
+        auto iter2 = list.cbegin();
+        std::vector<R> chunk1;
+        chunk1.emplace_back(*iter1);
+        while (iter1 != list.cend() && ++iter2 != list.cend()) {
+            if (__pred(*iter1, *iter2)) {
+                chunk1.emplace_back(*iter2);
+            } else {
+                result.emplace_back(chunk1);
+                chunk1 = {*iter2};
+            }
+            ++iter1;
+        }
+        if (chunk1.size())
+            result.emplace_back(chunk1);
+
+        return result;
+    }
+
+    template <class _InputIterator, class _OutputIterator, class _Predicate>
+    inline _OutputIterator
+    copy_if(_InputIterator __first, _InputIterator __last,
+            _OutputIterator __result, _Predicate __pred) {
+        for (; __first != __last; ++__first) {
+            if (__pred(*__first)) {
+                *__result = *__first;
+                ++__result;
+            }
+        }
+        return __result;
+    }
+
 }  // namespace _

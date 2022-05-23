@@ -3,6 +3,10 @@
 #include <shlobj.h>
 #include <Windows.h>
 #include <fmt/format.h>
+#include "sniffing/nowide/convert.hpp"
+using namespace nowide;
+#include "util.hpp"
+#include "FileUtils.h"
 
 std::string ExePath() {
 
@@ -42,18 +46,34 @@ const fs::path& GetDllFolder() {
 
 std::string smart_path(const std::string& path) {
 
-	if (path.length() > 2) {
+    if (path.length() > 2) {
         if (path[0] == '/' && path[2] == '/' && isalpha(path[1])) {
             return fmt::format("{}:/{}", path.substr(1, 1), path.substr(3));
-		}
-	}
-	return path;
+        }
+    }
+    return path;
 }
 
-// string extension from filename.ext
-std::string replace_extension(const std::string& path, const std::string& extension) {
-    fs::path dir(path);
-    // do we need to widen the extension??? really??
-    fs::path dirname = dir.replace_extension(extension);
-    return dirname.string();
+
+bool tryAndFindFile(cref_string fn, std::string& fnout) {
+    auto path = fs::path(smart_path(fn));
+    if (!path.is_relative()) {
+        // LOG_DEBUG("tryAndFindFile::non-relative path: {}", fn.c_str());
+        return fnout = narrow(path.wstring()), file_exists(path.wstring());
+    }
+    std::string filename = fn;
+    //if (!file_exists(filename = GetOurAppDataPath(fn)))
+    //    if (!file_exists(filename = GetRunningExecutableFolder(fn)))
+    //        if (!file_exists(filename = GetOurModuleFolder(fn))) return LOG_FUNC("Not found: \"{}\"", fn.c_str()), false;
+    // LOG_FUNC("Found: \"{}\"", filename.c_str());
+
+    if (!file_exists(filename)) return LOG_FUNC("Not found: \"{}\"", fn.c_str()), false;
+    fnout = filename;
+    return true;
 }
+
+bool tryAndFindFile(cref_string fn) {
+    std::string unused;
+    return tryAndFindFile(fn, unused);
+}
+

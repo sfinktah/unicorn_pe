@@ -75,6 +75,19 @@ std::string realpath(const std::string& path) {
 
 std::string extension(const std::string& path) { return fspath(path).extension().string(); }
 
+// realpath() expands all symbolic links and resolves references to /./, /../ and extra / characters in the input path and returns
+// the canonicalized absolute pathname.
+fs::path realpath(const fs::path& path) {
+    fspath dir(path);
+    std::error_code ec;
+    auto rv = fs::canonical(dir, ec);
+    if (!ec) return dir;
+    return rv;
+}
+
+fs::path extension(const fs::path& path) { return fspath(path).extension(); }
+
+
 std::string pathCombine(const std::string& path, const std::string& more) {
     try {
         return (fspath(path) / fspath(more)).string();
@@ -93,6 +106,34 @@ std::wstring pathCombine(const std::wstring& path, const std::wstring& more) {
     } catch (std::invalid_argument) {
         return path + L"\\" + more;
     }
+}
+
+// dirname — Returns a parent directory's path
+fs::path dirname(const fs::path& path) {
+    fspath dir(path);
+    fspath dirname = dir.parent_path();
+    return dirname;
+}
+
+// basename — Returns trailing name component of path
+fs::path basename(const fs::path& path) {
+    fspath dir(path);
+    fspath basename = dir.filename();
+    return basename;
+}
+
+// pick off stem (basename) in filename (leaf) before dot
+fs::path stem(const fs::path& path) {
+    fspath dir(path);
+    fspath stem = dir.stem();
+    return stem;
+}
+
+// basename — Returns trailing name component of path
+fs::path filename(const fs::path& path) {
+    fspath dir(path);
+    fspath filename = dir.filename();
+    return filename;
 }
 
 // dirname — Returns a parent directory's path

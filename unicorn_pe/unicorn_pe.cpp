@@ -729,7 +729,7 @@ uintptr_t uc_rip(uc_engine* uc) {
     return rip;
 }
 
-template <typename T = uintptr_T>
+template <typename T = uintptr_t>
 T uc_peek(uc_engine* uc) {
     T value;
     uintptr_t rsp;
@@ -795,7 +795,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
         };
 
         auto [it, suc] = visited.emplace(address);
-        if (1 || suc) {
+        if (ctx->m_DisassembleForce || suc) {
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
 
@@ -903,7 +903,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     if (!pystring::startswith(insn[ii].mnemonic, "nop")) {
                         FuncTailInsn fti;
                         fti.ea(virtualBase)
-                            .text(fmt::format("{} {}", insn[ii].mnemonic, op_string))
+                            .text(pystring::rstrip(fmt::format("{} {}", insn[ii].mnemonic, op_string)))
                             .size(size)
                             .code(std::string((char*)codeBuffer, size))
                             .mnemonic(insn[ii].mnemonic)
@@ -918,7 +918,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     vector_fti insn_list;
                     if (1 && multimatch(history, {
                                                      R"(push rbp)",
-                                                     R"(lea rbp, \[rel ({jtarget}[::address::]))",
+                                                     R"(lea rbp, \[rel ({jtarget}[::address::])\])",
                                                      R"(xchg qword ptr \[rsp\], rbp)",
                                                      R"(jmp ({ctarget}[::address::]))",
                                                  },
@@ -1019,7 +1019,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                                      // xchg qword ptr [rsp], rbp
                                                      // ret
                                                      R"(push rbp)",
-                                                     R"(lea rbp, \[rel ({jtarget}[::address::]))",
+                                                     R"(lea rbp, \[rel ({jtarget}[::address::])\])",
                                                      R"(xchg qword ptr \[rsp\], rbp)",
                                                      R"(ret)",
                                                  },
@@ -1205,6 +1205,8 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 //quick_test_matched: mov qword ptr \[rsp-8\], (?:\br(?:(?:[a-d])x|(?:[sb])p|(?:[sd])i)\b);lea rsp, \[rsp-8\]
                 //quick_test_matched: movupd xmmword ptr [rsp+0xb0], xmm12;movupd xmmword ptr [rsp+0xc0], xmm5;movupd xmmword ptr [rsp+0xd0], xmm8;movupd xmmword ptr [rsp+0xe0], xmm6;movupd xmmword ptr [rsp+0xf0], xmm15;push 0x10;test rsp, 0xf;jne 0x14449297d;sub rsp, 8;jmp 0x14394803d;push rbp;lea rbp, [rel 0x1433eab1e];xchg qword ptr [rsp], rbp;jmp 0x142fd556b;mov qword ptr [rsp-8], rbp;lea rsp, [rsp-8]
             }
+        } else {
+            history.clear();
         }
     }
 
@@ -2338,6 +2340,7 @@ int main(int argc, char** argv) {
         uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
         std::array<mem::pattern, 1> patterns{mem::pattern("48 8D 05 ?? ?? ?? ?? 48 89 45 ?? 48 8B 05 ?? ?? ?? ?? 48 F7 D8")};
         mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
+        mem::region rr(ctx.m_ImageBase, ctx.m_ImageEnd - ctx.m_ImageBase);
 
         auto normalise_base = [&](uintptr_t ea) {
             return r.adjust_base(0x140000000, ea).as<uintptr_t>();
@@ -2357,16 +2360,16 @@ int main(int argc, char** argv) {
             auto abso_offset = ea.add(o_abs).rip(4);
             if (r.contains(abso_offset)) {
                 auto abso_ptr = abso_offset.deref();
-                if (r.contains(abso_ptr)) {
-                    auto abso = abso_offset.as<uintptr_t>();
+                if (rr.contains(abso_ptr)) {
+                    auto abso = abso_offset.as<uintptr_t&>();
                     if (rel == abso) {
                         return abso;
                     }
                 }
             }
-            //*outs << fmt::format("find failed at: {:x}: rel: {:x}, abso: {:x}, diff: {:x}",
-            //                     normalise_base(ea.as<uintptr_t>()), rel, abso, (intptr_t)abso - (intptr_t)rel)
-            //      << "\n";
+            *outs << fmt::format("find failed at: {:x}: rel: {:x}",
+                                 normalise_base(ea.as<uintptr_t>()), rel)
+                  << "\n";
             return 0;
         };
 
@@ -2382,27 +2385,33 @@ int main(int argc, char** argv) {
             auto abso_offset = ea.add(o_abs).rip(4);
             if (r.contains(abso_offset)) {
                 auto abso_ptr = abso_offset.deref();
-                if (r.contains(abso_ptr)) {
-                    auto abso = abso_offset.as<uintptr_t>();
+                if (rr.contains(abso_ptr)) {
+                    auto abso = abso_offset.as<uintptr_t&>();
                     if (rel == abso) {
                         return abso;
                     }
-                }
+                } else
+                    LOG("abso_ptr: {}", abso_offset.as<uintptr_t>());
             }
-            //*outs << fmt::format("find failed at: {:x}: rel: {:x}, abso: {:x}, diff: {:x}",
-            //                     normalise_base(ea.as<uintptr_t>()), rel, abso, (intptr_t)abso - (intptr_t)rel)
-            //      << "\n";
+            *outs << fmt::format("find failed at: {:x}: rel: {:x}",
+                                 normalise_base(ea.as<uintptr_t>()), rel)
+                  << "\n";
             return 0;
         };
 
         // return [e for e in FindInSegments(pattern, '.text', None, predicate_checksummers)]
+
         std::vector<mem::pointer> results;
-        for (mem::pattern p : patterns) {
-            auto found = scan_all_with_iteratee(r, p, iteratee);
-            results.insert(results.end(), found.begin(), found.end());
-        }
-        //auto found = scan_all_with_iteratee(mem::pattern("48 8b 05 ?? ?? ?? ?? 48 89 45 ?? 48 8d 05 ?? ?? ?? ?? 48 89 45"), r, iteratee6);
-        //results.insert(results.end(), found.begin(), found.end());
+
+        //for (mem::pattern p : patterns) {
+        //    auto found = scan_all_with_iteratee(r, p, iteratee);
+        //    results.insert(results.end(), found.begin(), found.end());
+        //}
+
+        auto found = scan_all_with_iteratee(r, mem::pattern("48 8D 05 ?? ?? ?? ?? 48 89 45 ?? 48 8B 05 ?? ?? ?? ??"), iteratee);
+        results.insert(results.end(), found.begin(), found.end());
+        found = scan_all_with_iteratee(r, mem::pattern("48 8b 05 ?? ?? ?? ?? 48 89 45 ?? 48 8d 05 ?? ?? ?? ??"), iteratee6);
+        results.insert(results.end(), found.begin(), found.end());
 
         // sort and make unique, then add to list of functions to scan
         std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
@@ -2541,92 +2550,93 @@ int main(int argc, char** argv) {
                 // m = mem(FindInSegments("48 89 6c 24 f8 48 8d 64 24 f8")).find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45 64 01 00 00 00", 7)
                 // m = [x for x in [mem(ea).add(4).rip(4).is_match("c7 45 .. 01 00 00 00", 7) for ea in FindInSegments("3b c2 0f 85")] if not x.in_error()]
                 // clang-format off
-            mbs ptr1;
-            scan_all_do(r, mem::pattern("3b c2 0f 85"), [&](auto ea) {
-                mbs(ea)
-                    .add(4)
-                    .rip(4)
-                    .and_then([&](auto m) { 
-                            LOG("and then... {:x}", m_normalise_base(m));
-                            // C7 45 64 01 00 00 00
-                            m.if_find("c7 45 ?? 01 00 00 00", 0, [&](auto m) { 
-                                 LOG("found ptr1 at {:#x}", m_normalise_base(m));
-                                 ptr1 = m.add(7); 
-                                 if (m.add(3).as<uint32_t&>() == 1) {
-                                     m.add(3).as<uint32_t&>() = 0; 
-                                     LOG("rewrite dword 1 to 0");
-                                 }
-                                 else
-                                     LOG("dword was not 1 as we expected");
-                             }).or_else([&]{
-                                 LOG("wasn't ptr1 at {:#x}", m_normalise_base(m));
-                             });
-                    })
-                    .or_else([] {
-                        *outs << "couldn't find start of unpack\n";
-                    });
-                });
-            #if 0
-            scan_all_do(r, mem::pattern("55 48 81 ec ?? 00 00 00"), [&](auto ea) {
-                mbs(ea)
-                    .if_find("3b c2 0f 85", 256, [&](auto m) {
-                        LOG("found 3b c2 05 85");
-                        m.add(4)
-                         .rip(4)
-                         .if_find("c7 45", 0, [&](auto m) { 
-                             LOG("found ptr1 at {:#x}", m_normalise_base(m));
+                mbs ptr1;
+                LOG("at1");
+                scan_all_do(r, mem::pattern("3b c2 0f 85"), [&](auto ea) {
+                    LOG("at1 match at {:#x}", normalise_base(ea));
+                    mbs(ea)
+                        .add(4)
+                        .rip(4)
+                        // C7 45 5C 01 00 00 00
+                        .matches("c7 45 ?? 01 00 00 00")
+						.and_then([&](auto m) { 
+                             LOG("  found ptr1 at {:#x}", m_normalise_base(m));
                              ptr1 = m.add(7); 
                              if (m.add(3).as<uint32_t&>() == 1) {
                                  m.add(3).as<uint32_t&>() = 0; 
-                                 LOG("rewrite dword 1 to 0");
+                                 LOG("  rewrote dword 1 to 0");
                              }
                              else
-                                 LOG("dword was not 1 as we expected");
-                         }).or_else([]{
-                             *outs << "couldn't find ptr1\n";
+                                 LOG("  dword was not 1 as we expected, but was {}", m.add(3).as<uint32_t&>());
+                         }).or_else([&]{
+                             LOG("  wasn't ptr1 at {:x}", normalise_base(ea));
                          });
-                    })
-                    .or_else([] {
-                        *outs << "couldn't find start of unpack\n";
-                    });
-            });
-            #endif
-
-            // for x in FindInSegments("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"):
-            //     mem(x).add(21).rip(4).matches('c7 45 .. 00 00 00 00').jmp(y)
-            bool done = false;
-            scan_all_do(r,
-                        mem::pattern("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"),
-                        [&](uintptr_t ea) {
-                            *outs << "found5 " << std::hex << normalise_base(ea) << "\n";
-                            mbs(ea).add(21).rip(4).matches("c7 45 ?? 00 00 00 00").and_then([&](auto m) {
-                                *outs << "found6 " << std::hex << m_normalise_base(m) << "\n";
-                                if (ptr1) {
-                                    *outs << "replacing ptr1 with jmp\n";
-                                    ptr1.as<uint8_t&>()           = 0xe9;
-                                    ptr1.offset(1).as<int32_t&>() = (int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5);
-                                    //ptr1.write<uint8_t>(0xe9);
-                                    //ptr1.offset(1).write<int32_t>((int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5));
-                                    done = true;
-                                    // return ptr1.jmp(m_normalise_base(m)).as<uintptr_t>();
-                                }
+                });
+                #if 1
+                if (!ptr1) {
+                    LOG("at2");
+                    scan_all_do(r, mem::pattern("55 48 81 ec ?? 00 00 00"), [&](auto ea) {
+                        LOG("at2 match at {:#x}", normalise_base(ea));
+                        mbs(ea)
+                            .find("3b c2 0f 85", 256)
+                            .and_then([&](auto m) {
+                                LOG("  found 3b c2 05 85");
+                                m.add(4)
+                                 .rip(4)
+                                 .if_find("c7 45", 0, [&](auto m) { 
+                                     LOG("  found ptr1 at {:#x}", m_normalise_base(m));
+                                     ptr1 = m.add(7); 
+                                     if (m.add(3).as<uint32_t&>() == 1) {
+                                         m.add(3).as<uint32_t&>() = 0; 
+                                         LOG("  rewrite dword 1 to 0");
+                                     }
+                                     else
+                                         LOG("  dword was not 1 as we expected, but was {}", m.add(3).as<uint32_t&>());
+                                 }).or_else([]{
+                                     *outs << "couldn't find ptr1\n";
+                                 });
+                            })
+                            .or_else([] {
+                                *outs << "couldn't find start of unpack\n";
                             });
-                        });
+                    });
+                }
+                #endif
 
-            if (!done) {
-                LOG("couldn't complete patches, exiting.");
-                uc_close(uc);
-                cs_close(&ctx.m_cs);
-                ctx.thisProc.mmap().UnmapAllModules();
-                timer.ShowElapsed();
-                exit(1);
-            }
+                // for x in FindInSegments("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"):
+                //     mem(x).add(21).rip(4).matches('c7 45 .. 00 00 00 00').jmp(y)
+                bool done = false;
+                if (ptr1) {
+                    LOG("at3");
+                    scan_all_do(r,
+                            mem::pattern("8b 05 ?? ?? ?? ?? 8b 15 ?? ?? ?? ?? 3b c2 0f 85 ?? ?? ?? ?? e9"),
+                            [&](uintptr_t ea) {
+                                LOG("at3 match at {:#x}", normalise_base(ea));
+                                *outs << "found5 " << std::hex << normalise_base(ea) << "\n";
+                                mbs(ea).add(21).rip(4).matches("c7 45 ?? 00 00 00 00").and_then([&](auto m) {
+                                    *outs << "found6 " << std::hex << m_normalise_base(m) << "\n";
+                                    if (ptr1) {
+                                        *outs << "replacing ptr1 with jmp\n";
+                                        ptr1.as<uint8_t&>()           = 0xe9;
+                                        ptr1.offset(1).as<int32_t&>() = (int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5);
+                                        //ptr1.write<uint8_t>(0xe9);
+                                        //ptr1.offset(1).write<int32_t>((int)(m.as<uintptr_t>() - ptr1.as<uintptr_t>() - 5));
+                                        done = true;
+                                        // return ptr1.jmp(m_normalise_base(m)).as<uintptr_t>();
+                                    }
+                                });
+                            });
 
-            //if (auto p = GetPattern(S("01 b9 2f a9"), 
-   //                             S("Launcher Check")).Sub(9).Rip())
-            //{
-            //  g_ByteManagement.ReturnValue(p.As<void*>(), (uint32_t)1, S("Launcher Check Patch"));
-            //}
+                }
+                if (!done) {
+                    LOG("couldn't complete patches, exiting.");
+                    uc_close(uc);
+                    cs_close(&ctx.m_cs);
+                    ctx.thisProc.mmap().UnmapAllModules();
+                    timer.ShowElapsed();
+                    return 1;
+                }
+                LOG("patches complete");
 
                 // clang-format on
                 auto iteratee = [&](mem::pointer ea) -> uintptr_t {
@@ -2674,8 +2684,10 @@ int main(int argc, char** argv) {
                 //             iteratee(found);
                 //         }
                 uc_mem_write(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
+                return 0;
             }
         };
+        // patch_anti_tamper();
 
         // 335.2
         // mbs(0x14384BE32).jmp(0x143612F8C);  // skip tamper and segment check
@@ -2726,9 +2738,12 @@ int main(int argc, char** argv) {
                 }
             }
 
-            err = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
-            patch_anti_tamper();
+            ctx.m_DisassembleForce = false;
+            err                    = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
             LOG("-------------------- restart ----------------------");
+            if (1 == patch_anti_tamper()) {
+                TerminateProcess(GetCurrentProcess(), 2);
+            }
             uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
             uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
             uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
@@ -2752,7 +2767,8 @@ int main(int argc, char** argv) {
             ctx.m_SkipSecondCall = cmdl["skip-second-call"];
             ctx.m_SkipFourthCall = cmdl["skip-4th-call"];
 
-            err = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
+            ctx.m_DisassembleForce = false;
+            err                    = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 0);
 
             if (ctx.m_LastException != STATUS_SUCCESS) {
                 auto except         = ctx.m_LastException;
@@ -3078,15 +3094,20 @@ int main(int argc, char** argv) {
         fclose(fp);
     }
 
+    *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << std::endl;
+    *outs << "uc_emu_start return: " << std::dec << err << std::endl;
+    *outs << "entrypoint return: " << std::hex << result_rax << std::endl;
+    *outs << "last rip: " << std::hex << ctx.m_LastRip;
+
+    outs->flush();
+    timer.ShowElapsed();
+
+    // _exit() abort() std::terminate()
+    TerminateProcess(GetCurrentProcess(), 2);
+
     uc_close(uc);
     cs_close(&ctx.m_cs);
     ctx.thisProc.mmap().UnmapAllModules();
-    timer.ShowElapsed();
-
-    *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
-    *outs << "uc_emu_start return: " << std::dec << err << "\n";
-    *outs << "entrypoint return: " << std::hex << result_rax << "\n";
-    *outs << "last rip: " << std::hex << ctx.m_LastRip;
 
     std::stringstream rip_region, realentry_region;
     if (ctx.FindAddressInRegion(ctx.m_LastRip, rip_region))
@@ -3100,9 +3121,10 @@ int main(int argc, char** argv) {
     *outs << "flushing...\n";
     //std::string k;
     //std::cin >> k;
-    *outs << "should exit now" << std::endl;
-
-    //outs->flush();
+    *outs << "forcing exit now" << std::endl;
+    outs->flush();
+    // _exit() abort() std::terminate()
+    TerminateProcess(GetCurrentProcess(), 2);
 
     return 0;
 }

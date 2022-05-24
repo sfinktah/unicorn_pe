@@ -44,14 +44,17 @@ const fs::path& GetDllFolder() {
     return result;
 }
 
-std::string smart_path(const std::string& path) {
+std::string normalise(fs::path p) {
+    return p.lexically_normal().string();
+}
 
+std::string smart_path(const std::string& path) {
     if (path.length() > 2) {
         if (path[0] == '/' && path[2] == '/' && isalpha(path[1])) {
-            return fmt::format("{}:/{}", path.substr(1, 1), path.substr(3));
+            return normalise(fmt::format("{}:/{}", path.substr(1, 1), path.substr(3)));
         }
     }
-    return path;
+    return normalise(path);
 }
 
 

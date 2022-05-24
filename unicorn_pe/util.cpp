@@ -9,6 +9,7 @@
 #include <utility>
 #include "util.hpp"
 #include "Filesystem.hpp"
+#include "FileUtils.h"
 #include "Logger.hpp"
 #include "maclog.h"
 #include "sniffing/nowide/convert.hpp"
@@ -444,11 +445,11 @@ std::string regex_search(const std::string& pattern, const std::string& subject,
         std::regex r(pattern, options | (std::regex_constants::syntax_option_type)(ignoreCase ? std::regex_constants::icase : 0));
         std::smatch sm;
         if (std::regex_search(subject, sm, r)) {
-//#ifdef _DEBUG
-//            for (size_t i = 0; i < sm.size(); ++i) {
-//                LOG("regex_search_match ({}): '{}'", i, sm.str(i));
-//            }
-//#endif
+            //#ifdef _DEBUG
+            //            for (size_t i = 0; i < sm.size(); ++i) {
+            //                LOG("regex_search_match ({}): '{}'", i, sm.str(i));
+            //            }
+            //#endif
             return sm.str(sm.size() - 1);
             // return sm.str();
         }
@@ -561,17 +562,22 @@ size_t file_put_contents(const std::string& filename, const char* start, size_t 
 }
 
 fs::path spread_filename(fs::path path) {
-    auto dn = os::path::dirname(path.string());
-    auto bn = os::path::basename(path.string());
-    std::vector<std::string> subdirs;
-    auto hash = joaat(bn.c_str(), 0);
+    auto dn = dirname(path);
+    auto bn = basename(path);
+    //auto dn = os::path::dirname(path.string());
+    //auto bn = os::path::basename(path.string());
+    //std::vector<std::string> subdirs;
+	auto dstpath = dn;
+    auto hash = joaat(bn.string().c_str(), 0);
     for (int i = 0; i < 2; ++i) {
         uint32_t part = hash & (64 - 1);
         hash >>= 6;
-        subdirs.emplace_back(fmt::format("{:02}", part));
+        dstpath = dstpath / fmt::format("{:02}", part);
+        //subdirs.emplace_back(fmt::format("{:02}", part));
     }
-    auto dstpath = os::path::join(dn, os::path::join(subdirs));
-    return os::path::join(dstpath, bn);
+	return dstpath / bn;
+    //auto dstpath = os::path::join(dn, os::path::join(subdirs));
+    //return os::path::join(dstpath, bn);
 }
 
 void make_spread_folders(fs::path path) {
@@ -593,7 +599,7 @@ void make_spread_folders(fs::path path) {
 
 std::optional<uint64_t> asQwordO(std::optional<std::string> optarg, int default_base) {
     if (!optarg.has_value())
-		return std::nullopt;
+        return std::nullopt;
     return asQword(*optarg, default_base);
 }
 

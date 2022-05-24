@@ -235,7 +235,7 @@ namespace membricksafe {
                 return this->write<uint8_t>(0x41)
                     .push((reg >> 3) & 7);
             }
-			return this->write<uint8_t>(0x50 | 7 & reg);
+            return this->write<uint8_t>(0x50 | 7 & reg);
         }
 
         R pop(std::uint8_t reg) {
@@ -243,7 +243,7 @@ namespace membricksafe {
                 return this->write<uint8_t>(0x41)
                     .pop((reg >> 3) & 7);
             }
-			return this->write<uint8_t>(0x58 | 7 & reg);
+            return this->write<uint8_t>(0x58 | 7 & reg);
         }
 
         R dword(uint32_t value) const {
@@ -304,20 +304,8 @@ namespace membricksafe {
         }
 
         template <typename T>
-        R read(T& value) {
-            static_assert(std::is_trivially_copyable<T>::value, "Type is not trivially copyable");
-            uc_memcpy(g_ctx.m_uc, this->as<uintptr_t>(), &value, sizeof T);
-            printf("read %x from %llx\n", value, this->as<uintptr_t>());
-            // this->write<T>(value);
-            return this->offset(sizeof T);
-        }
-
-        template <typename T>
         T read() const {
-            static_assert(std::is_trivially_copyable<T>::value, "Type is not trivially copyable");
-            T value;
-            uc_memcpy(g_ctx.m_uc, this->as<uintptr_t>(), &value, sizeof T);
-            return value;
+            return *this->as<T*>();
         }
 
         template <typename T>
@@ -798,7 +786,9 @@ namespace membricksafe {
         template <typename Func>
         R if_find(const char* pattern, std::size_t size, Func&& func) const {
             R found = this->find(pattern, size);
-            return found ? std::forward<Func>(func)(found), *this : *this;
+            if (found)
+                std::forward<Func>(func)(found);
+            return *this;
         }
 
         R find(const char* pattern, std::size_t size = 0) const {
@@ -837,10 +827,12 @@ namespace membricksafe {
                 }
 
                 if (found) {
-                    return currentOffset;
+                    printf("found: 0x%llx +0x%llx\n", as<uintptr_t>(), currentOffset.as<uintptr_t>());
+					return currentOffset;
                 }
             }
 
+			printf("not found: 0x%llx\n", as<uintptr_t>());
             return nullptr;
         }
 

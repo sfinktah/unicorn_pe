@@ -264,6 +264,7 @@ public:
 	bool m_IsWin64;
 	bool m_IsKernel;
 	bool m_Disassemble;
+	bool m_DisassembleForce = false;
 	bool m_IsPacked;
 	bool m_BoundCheck;
 	bool m_Dump;

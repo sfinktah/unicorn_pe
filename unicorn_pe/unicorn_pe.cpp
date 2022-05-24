@@ -782,7 +782,8 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
     ctx->FlushMemMapping();
 
     if (ctx->m_Disassemble) {
-        const uint64_t virtualBase = ctx->NormaliseBase(address);
+        static bool was_disassembling = true;
+        const uint64_t virtualBase    = ctx->NormaliseBase(address);
         mem::region rr(ctx->m_ImageBase, ctx->m_ImageEnd - ctx->m_ImageBase);
         auto ripadd = [&](const std::string& str, uintptr_t rip) {
             if (~pystring::find(str, "[rip ")) {
@@ -796,6 +797,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
 
         auto [it, suc] = visited.emplace(address);
         if (ctx->m_DisassembleForce || suc) {
+            was_disassembling = true;
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
 
@@ -1206,7 +1208,11 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 //quick_test_matched: movupd xmmword ptr [rsp+0xb0], xmm12;movupd xmmword ptr [rsp+0xc0], xmm5;movupd xmmword ptr [rsp+0xd0], xmm8;movupd xmmword ptr [rsp+0xe0], xmm6;movupd xmmword ptr [rsp+0xf0], xmm15;push 0x10;test rsp, 0xf;jne 0x14449297d;sub rsp, 8;jmp 0x14394803d;push rbp;lea rbp, [rel 0x1433eab1e];xchg qword ptr [rsp], rbp;jmp 0x142fd556b;mov qword ptr [rsp-8], rbp;lea rsp, [rsp-8]
             }
         } else {
-            history.clear();
+            if (was_disassembling) {
+                was_disassembling = false;
+                LOG_DEBUG("............repeated instructions skipped");
+                history.clear();
+            }
         }
     }
 

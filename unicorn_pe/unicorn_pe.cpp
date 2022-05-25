@@ -2692,6 +2692,7 @@ int main(int argc, char** argv) {
                 uc_mem_write(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
                 return 0;
             }
+            return 0;
         };
         // patch_anti_tamper();
 
@@ -2744,34 +2745,36 @@ int main(int argc, char** argv) {
                 }
             }
 
-            ctx.m_DisassembleForce = false;
-            err                    = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
-            LOG("-------------------- restart ----------------------");
-            if (1 == patch_anti_tamper()) {
-                TerminateProcess(GetCurrentProcess(), 2);
+            if (ctx.m_History) {
+                ctx.m_DisassembleForce = true;
+                err                    = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
+                LOG("-------------------- restart ----------------------");
+                if (1 == patch_anti_tamper()) {
+                    TerminateProcess(GetCurrentProcess(), 2);
+                }
+                uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
+                uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
+                uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
+                uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
+                uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
+                uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
+                uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
+                uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
+                uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
+                uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
+                uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
+                uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
+                uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
+                uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
+                uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
+                uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+                visited.clear();
+                insn_count.clear();
+                call_targets.clear();
+                ctx.m_Calls.clear();
+                ctx.m_SkipSecondCall = cmdl["skip-second-call"];
+                ctx.m_SkipFourthCall = cmdl["skip-4th-call"];
             }
-            uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
-            uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
-            uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
-            uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
-            uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
-            uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
-            uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
-            uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
-            uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
-            uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
-            uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
-            uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
-            uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
-            uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
-            uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
-            uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
-            visited.clear();
-            insn_count.clear();
-            call_targets.clear();
-            ctx.m_Calls.clear();
-            ctx.m_SkipSecondCall = cmdl["skip-second-call"];
-            ctx.m_SkipFourthCall = cmdl["skip-4th-call"];
 
             ctx.m_DisassembleForce = false;
             err                    = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 0);
@@ -3134,3 +3137,28 @@ int main(int argc, char** argv) {
 
     return 0;
 }
+
+/*
+https://github.com/sfinktah/unicorn_pe  -- there's a built copy in x64/releases, and to build it yourself you will need `vcpkg install boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static` or something to that effect.  The other things are included (capstone, blackbone, unicorn).
+
+To extract blobs from a dumped binary:
+`/path/to/unicorn_pe.exe dumped.exe --find --save-written=test1` where test1 is a folder that exists (or it will be made for you) underneath where-ever you keep you .i64 file 
+
+To extract a non-dumped binary, in order of preference (i.e. until one of them works)
+```
+/path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call --history --skip-4th-call --patch-anti-tamper
+/path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call
+/path/to/unicorn_pe.exe retail.exe --dump --bitmap
+```
+`--dump` mode can also take a `save-written=<unpack_folder>` argument to create individual blobs.
+
+There are also some optional arguments that I haven't tested for a while, e.g.
+
+`--start 0x14000100 [--start 0x14000234...]` to manually set the addresses to scan (you'd normally be using those with `--disasm`
+`--patch "0x14000100:66 90"` to apply patches before running
+
+
+
+
+
+*/

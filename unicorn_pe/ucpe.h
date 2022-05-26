@@ -276,6 +276,9 @@ public:
 	bool m_SkipSecondCall;
 	bool m_SkipFourthCall;;
 	bool m_PatchRuntime;
+	bool m_RebuildImageSize = false;
+	bool m_RebuildSectionSizes = false;
+	bool m_DisableRebase = false;
 
 	uint64_t m_KSharedUserDataBase;
 	uint64_t m_KSharedUserDataEnd;

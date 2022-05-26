@@ -5,6 +5,7 @@
 #include "./traits.h"
 #ifndef NLOHMANN_JSON_VERSION_MAJOR
 // template<typename> struct is_basic_json : std::false_type {};
+#include <nlohmann/json.hpp>
 #endif
 using namespace nlohmann::detail;
 

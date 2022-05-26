@@ -182,6 +182,7 @@
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BraceExpander.cpp" />
     <ClCompile Include="CircularBuffer.cpp" />
     <ClCompile Include="emuapi.cpp" />
     <ClCompile Include="buffer.cpp" />
@@ -198,6 +199,7 @@
     <ClCompile Include="util.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BraceExpander.h" />
     <ClInclude Include="CircularBuffer.h" />
     <ClInclude Include="emuapi.h" />
     <ClInclude Include="Filesystem.hpp" />

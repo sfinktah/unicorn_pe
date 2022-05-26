@@ -51,6 +51,7 @@ using namespace nowide;
 #include "../vendor/lodash/095_uniq.h"
 #include "multimatch.h"
 #include "MegaFunc.h"
+#include "BraceExpander.h"
 
 using json = nlohmann::json;
 using namespace blackbone;
@@ -502,7 +503,9 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
     // 0xd4000 - 0xd3c00 = 0x400
     // ManualMapCallback:xxx-original-323.1-cff.exe 26c21410000, 3ed4000, 140000000
 
+#ifdef _DEBUG
     *outs << fmt::format("MapImageToEngine({}, {:x}, {:x}, {:x}, {:x}\n", narrow(ImageName), (uintptr_t)ImageBase, ImageSize, MappedBase, EntryPoint);
+#endif
     FakeModule_t* mod = new FakeModule_t(MappedBase, ImageSize, EntryPoint, ImageName);
     //_DllCharacteristics = pImageHeader->OptionalHeader.DllCharacteristics;
 
@@ -2045,18 +2048,21 @@ int main(int argc, char** argv) {
     std::wstring wfilename;
     ANSIToUnicode(smart_path(filename), wfilename);
 
-    bool bKernel         = true;
-    ctx.m_IsKernel       = cmdl["k"];
-    ctx.m_Disassemble    = cmdl["disasm"];
-    ctx.m_Bitmap         = cmdl["bitmap"];
-    ctx.m_IsPacked       = cmdl["packed"];
-    ctx.m_BoundCheck     = cmdl["boundcheck"];
-    ctx.m_Dump           = cmdl["dump"];
-    ctx.m_FindChecks     = cmdl["find"];
-    ctx.m_SkipSecondCall = cmdl["skip-second-call"];
-    ctx.m_SkipFourthCall = cmdl["skip-4th-call"];
-    ctx.m_History        = cmdl["history"];
-    ctx.m_PatchRuntime   = cmdl["patch-runtime"];
+    bool bKernel              = true;
+    ctx.m_IsKernel            = cmdl["k"];
+    ctx.m_Disassemble         = cmdl["disasm"];
+    ctx.m_Bitmap              = cmdl["bitmap"];
+    ctx.m_IsPacked            = cmdl["packed"];
+    ctx.m_BoundCheck          = cmdl["boundcheck"];
+    ctx.m_Dump                = cmdl["dump"];
+    ctx.m_FindChecks          = cmdl["find"];
+    ctx.m_SkipSecondCall      = cmdl["skip-second-call"];
+    ctx.m_SkipFourthCall      = cmdl["skip-4th-call"];
+    ctx.m_History             = cmdl["history"];
+    ctx.m_PatchRuntime        = cmdl["patch-runtime"];
+    ctx.m_RebuildImageSize    = cmdl["rebuild-size"];
+    ctx.m_RebuildSectionSizes = cmdl["rebuild-sections"];
+    ctx.m_DisableRebase       = cmdl["no-aslr"];
     if (cmdl("save-written") >> ctx.m_SaveWritten) {
         if (!fs::is_directory(ctx.m_SaveWritten) && !fs::create_directory(ctx.m_SaveWritten)) {
             *outs << "Not a directory: " << ctx.m_SaveWritten << "\n";
@@ -2148,7 +2154,7 @@ int main(int argc, char** argv) {
         LOG("File does not exist: {}", narrow(wfilename));
     }
     auto MapResult = ctx.thisProc.mmap().MapImage(wfilename,
-                                                  ManualImports | NoSxS | NoExceptions | NoDelayLoad | NoTLS | NoExceptions | NoExec,
+                                                  RebaseProcess | ManualImports | NoSxS | NoExceptions | NoDelayLoad | NoTLS | NoExceptions | NoExec,
                                                   ManualMapCallback, &ctx, 0, 0x140000000, PreManualMapCallback);
 
     if (!MapResult.success()) {
@@ -2340,6 +2346,44 @@ int main(int argc, char** argv) {
     }
     if (cmdl["rebuild"]) {
     }
+    {
+        ctx.filename = filename;
+        *outs << "Filename: " << ctx.filename << "\n";
+
+		std::vector<std::string> filenames { ctx.filename, "default.exe" };
+        for (const auto& basename : filenames) {
+			auto fnJson = replace_extension(basename, ".funcs.json");
+			if (fs::exists(fnJson)) {
+				megafunc = new MegaFunc(fnJson);
+				LOG_INFO(__FUNCTION__ ": reversed location 0x140001000 to: %s", megafunc->Lookup(0x100).c_str());
+				break;
+			}
+		}
+
+        for (const auto& basename : filenames) {
+			auto fnJson = replace_extension(ctx.filename, ".names.json");
+			if (fs::exists(fnJson)) {
+				LOG("reading names from {}", fnJson);
+				std::ifstream infile(fnJson);
+				json j;
+				infile >> j;
+
+				for (auto& [name, value] : j.items()) {
+					if (value.is_number() && !value.empty() /* && value[0].is_array() && value[0].size() == 2*/) {
+						auto [it1, happy1] = megaFuncNames.emplace(value, name);
+						//if (!happy1) {
+						//    auto existing = it1->second;
+						//    if (name != existing) {
+						//        //LOG_TRACE(__FUNCTION__ ": '0x14%07x' existing key '%s' clashed with '%s', overwriting.", start, existing.c_str(), name.c_str());
+						//        megaFuncNames[start] = name;
+						//    }
+						//}
+					}
+				}
+				break;
+			}
+		}
+    }
 
     if (ctx.m_FindChecks) {
         virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
@@ -2348,10 +2392,68 @@ int main(int argc, char** argv) {
         mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
         mem::region rr(ctx.m_ImageBase, ctx.m_ImageEnd - ctx.m_ImageBase);
 
+        auto megalookup = [&](uintptr_t addr) {
+            if (auto it = megaFuncNames.find(addr - 0x140000000); it != megaFuncNames.end()) {
+                return fmt::format("{}", it->second);
+            }
+            if (megafunc && megafunc->Contains(addr - 0x140000000)) {
+                return pystring::rstrip(megafunc->Lookup(addr - 0x140000000));
+            }
+
+            return fmt::format("{:#x}", addr);
+        };
+
         auto normalise_base = [&](uintptr_t ea) {
             return r.adjust_base(0x140000000, ea).as<uintptr_t>();
             // return ea - (uintptr_t)imagebuf.GetBuffer() + 0x140000000;
         };
+        auto m_normalise_base = [&](mem::pointer& ea) {
+            return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+        };
+
+        std::set<uintptr_t> find_ref_dupes;
+        std::deque<uintptr_t> find_refs;
+        for (auto& param : cmdl.params("find-ref")) {
+            for (auto expanded : sfinktah::string::brace_expander::expand(param.second)) {
+				if (auto addr = asQword(expanded, 16)) {
+					find_refs.emplace_back(*addr);
+				} else
+					LOG("couldn't process '{}' as an address", param.second);
+            }
+        }
+
+        bool recursive = cmdl["r"];
+        while (!find_refs.empty()) {
+            auto target = find_refs.front();
+            find_refs.pop_front();
+            LOG("searching  for reference to {:#x}", target);
+            auto ImageSize = ctx.m_ImageEnd - ctx.m_ImageBase - 8;
+            auto ptr       = mem::pointer(imagebuf.GetBuffer());
+            for (size_t a = 0; a < ImageSize; ++a) {
+                if (ptr.at<int32_t>(a) + 0x140000000 + a + 4 == target) {
+                    auto at = 0x140000000 + a;
+                    LOG("found relative reference to {:#x} at {}", target, megalookup(at));
+                    if (recursive) {
+                        if (find_ref_dupes.emplace(0x140000000 + a).second) {
+                            find_refs.emplace_back(0x140000000 + a);
+                        }
+                    }
+                }
+                if (ptr.at<uintptr_t>(a) == target) {
+                    auto at = 0x140000000 + a;
+                    LOG("found absolute reference to {:#x} at {}", target, megalookup(at));
+                    if (recursive) {
+                        if (find_ref_dupes.emplace(0x140000000 + a).second) {
+                            find_refs.emplace_back(0x140000000 + a);
+                        }
+                    }
+                }
+            }
+        }
+        if (cmdl("find-ref")) {
+            outs->flush();
+            TerminateProcess(GetCurrentProcess(), 2);
+        }
 
         auto iteratee = [&](uintptr_t ptr) -> uintptr_t {
             mem::pointer ea(ptr);
@@ -2365,7 +2467,8 @@ int main(int argc, char** argv) {
             // const auto abso = ea.add(o_abs).rip(4).deref().as<uintptr_t>();
             auto abso_offset = ea.add(o_abs).rip(4);
             if (r.contains(abso_offset)) {
-                auto abso_ptr = abso_offset.deref();
+                auto abso_ptr = abso_offset.as<uintptr_t&>();
+                //auto abso_ptr = abso_offset.deref();
                 if (rr.contains(abso_ptr)) {
                     auto abso = abso_offset.as<uintptr_t&>();
                     if (rel == abso) {
@@ -2390,7 +2493,8 @@ int main(int argc, char** argv) {
             //const auto abso = ea.add(o_abs).rip(4).deref().as<uintptr_t>();
             auto abso_offset = ea.add(o_abs).rip(4);
             if (r.contains(abso_offset)) {
-                auto abso_ptr = abso_offset.deref();
+                auto abso_ptr = abso_offset.as<uintptr_t&>();
+                //auto abso_ptr = abso_offset.deref();
                 if (rr.contains(abso_ptr)) {
                     auto abso = abso_offset.as<uintptr_t&>();
                     if (rel == abso) {
@@ -2403,6 +2507,65 @@ int main(int argc, char** argv) {
                                  normalise_base(ea.as<uintptr_t>()), rel)
                   << "\n";
             return 0;
+        };
+
+        auto m_skip_jmps = [&](mem::pointer& ea) -> bool {
+            auto byte = ea.as<uint8_t&>();
+            auto addr = m_normalise_base(ea);
+            // compiler will optimise using sneaky trick
+            while (byte == 0xe9 || byte == 0xeb) {
+                if (byte == 0xe9)
+                    ea = ea.add(1).rip(4);
+                else
+                    // jmp short
+                    ea += ea.at<int8_t>(1) + 2;
+                if (!r.contains(ea))
+                    return LOG("SKIPJMPFAILREGION1: {:x}", addr), false;
+            }
+            return true;
+        };
+
+        auto iteratee11 = [&](mem::pointer ea) -> uintptr_t {
+            const auto o_abs = 3;
+            const auto o_rel = 14;
+
+            // 48 8B 05 08 88 B8 00                              mov     rax, cs:_off_image_base
+            // 48 89 45 38                                       mov     [rbp+38h], rax
+            // 48 8D 05 8B BA 85 00                              lea     rax, check_func
+            // 48 89 45 18                                       mov     [rbp+18h], rax
+            // 48 8B 05 90 D6 D6 00                              mov     rax, cs:_off_check_func
+            // 48 F7 D8                                          neg     rax
+            auto abso_ptr = ea.add(o_abs).rip(4);
+            if (r.contains(abso_ptr)) {
+                abso_ptr = abso_ptr.deref();
+                if (abso_ptr.as<uintptr_t>() == 0x140000000) {
+                    const auto rel = normalise_base(ea.add(o_rel).rip(4).as<uintptr_t>());
+                    if (rr.contains(rel)) {
+                        ea += 0x12;
+                        if (!m_skip_jmps(ea))
+                            return LOG("FASTFAIL1: {:x}", m_normalise_base(ea)), 0;
+                        if ((ea.as<uint32_t&>() & 0x00ffffff) != 0x00458948)  // 'mov [rbp+0x18], rax'
+                            return LOG("FASTFAIL2: {:x}", m_normalise_base(ea)), 0;
+                        ea += 4;
+                        if (!m_skip_jmps(ea))
+                            return LOG("FASTFAIL3: {:x}", m_normalise_base(ea)), 0;
+                        if ((ea.as<uint32_t&>() & 0x00ffffff) != 0x00058b48)  // 'mov rax, [rel off_146C028B2]'
+                            return LOG("FASTFAIL4: {:x}", m_normalise_base(ea)), 0;
+                        abso_ptr = ea.add(3).rip(4);
+                        if (r.contains(abso_ptr)) {
+                            const auto abso = abso_ptr.as<uintptr_t&>();
+                            if (rel == abso) {
+                                return LOG("ITER11: {:x}", m_normalise_base(ea)), abso;
+                            }
+                            return LOG("SLOWFAIL2: {:x}", m_normalise_base(ea)), 0;
+                        }
+                        return LOG("SLOWFAIL3: {:x}", m_normalise_base(ea)), 0;
+                    }
+                    return LOG("SLOWFAIL4: {:x}", m_normalise_base(ea)), 0;
+                }
+                return LOG("SLOWFAIL5: {:x}", m_normalise_base(ea)), 0;
+            }
+            return LOG("SLOWFAIL1: {:x}", m_normalise_base(ea)), 0;
         };
 
         // return [e for e in FindInSegments(pattern, '.text', None, predicate_checksummers)]
@@ -2418,6 +2581,8 @@ int main(int argc, char** argv) {
         results.insert(results.end(), found.begin(), found.end());
         found = scan_all_with_iteratee(r, mem::pattern("48 8b 05 ?? ?? ?? ?? 48 89 45 ?? 48 8d 05 ?? ?? ?? ??"), iteratee6);
         results.insert(results.end(), found.begin(), found.end());
+        found = scan_all_with_iteratee(r, mem::pattern("48 8b 05 ?? ?? ?? ?? 48 89 45 ?? 48 8d 05 ?? ?? ?? ??"), iteratee11);
+        results.insert(results.end(), found.begin(), found.end());
 
         // sort and make unique, then add to list of functions to scan
         std::sort(results.begin(), results.end(), [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
@@ -2430,36 +2595,6 @@ int main(int argc, char** argv) {
     }
 
     if (fns.empty()) {
-        ctx.filename = filename;
-        *outs << "Filename: " << ctx.filename << "\n";
-
-        auto fnJson = replace_extension(ctx.filename, ".funcs.json");
-        if (fs::exists(fnJson)) {
-            megafunc = new MegaFunc(fnJson);
-            LOG_INFO(__FUNCTION__ ": reversed location 0x140001000 to: %s", megafunc->Lookup(0x100).c_str());
-        }
-
-        fnJson = replace_extension(ctx.filename, ".names.json");
-        if (fs::exists(fnJson)) {
-            LOG("reading names from {}", fnJson);
-            std::ifstream infile(fnJson);
-            json j;
-            infile >> j;
-
-            for (auto& [name, value] : j.items()) {
-                if (value.is_number() && !value.empty() /* && value[0].is_array() && value[0].size() == 2*/) {
-                    auto [it1, happy1] = megaFuncNames.emplace(value, name);
-                    //if (!happy1) {
-                    //    auto existing = it1->second;
-                    //    if (name != existing) {
-                    //        //LOG_TRACE(__FUNCTION__ ": '0x14%07x' existing key '%s' clashed with '%s', overwriting.", start, existing.c_str(), name.c_str());
-                    //        megaFuncNames[start] = name;
-                    //    }
-                    //}
-                }
-            }
-        }
-
         //uintptr_t base_address           = 0x140000000;
         //base_address                     = ctx.m_ImageEnd;
         //const uintptr_t prologue_address = base_address + 0x100;
@@ -3068,6 +3203,51 @@ int main(int argc, char** argv) {
             SectionHeader[i].SizeOfRawData    = SectionHeader[i].Misc.VirtualSize;
         }
 
+        {
+            DWORD SectionAlignment;
+
+            if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
+                auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
+                SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
+            } else {
+                SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
+            }
+
+            auto correct_size = ntheader->OptionalHeader.BaseOfCode;
+
+            for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
+                DWORD SectionSize = SectionHeader[i].Misc.VirtualSize;
+                SectionSize       = (DWORD)ALIGN_UP_MIN1(
+                    std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
+                    SectionAlignment);
+                *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
+                                     SectionHeader[i].Name,
+                                     SectionHeader[i].Misc.VirtualSize,
+                                     SectionSize,
+                                     SectionHeader[i].VirtualAddress,
+                                     correct_size,
+                                     SectionHeader[i].SizeOfRawData,
+                                     SectionHeader[i].PointerToRawData)
+                      << "\n";
+
+                correct_size += SectionSize;
+                if (ctx.m_RebuildSectionSizes) {
+                    SectionHeader[i].Misc.VirtualSize = SectionSize;
+                }
+            }
+
+            LOG("ImageBase: {:8x}", ntheader->OptionalHeader.ImageBase);
+            LOG("ImageSize: {:8x}", ntheader->OptionalHeader.SizeOfImage);
+            if (ntheader->OptionalHeader.SizeOfImage != correct_size && ctx.m_RebuildImageSize) {
+                ntheader->OptionalHeader.SizeOfImage = correct_size;
+                LOG("ImageSize changed to: {:8x}", correct_size);
+            }
+
+            if (ctx.m_DisableRebase) {
+                ntheader->OptionalHeader.DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+            }
+        }
+
         if (ctx.m_PatchRuntime) {
             mem::scan(mem::pattern("01 b9 2f a9"), r)
                 .or_else([] { LOG("Couldn't patch launcher detection"); })
@@ -3087,7 +3267,7 @@ int main(int argc, char** argv) {
 
         // ctx.RebuildSection(imagebuf.GetBuffer(), (ULONG)(ctx.m_ImageEnd - ctx.m_ImageBase), RebuildSectionBuffer);
 
-        ctx.m_ImageRealEntry = 0x140000000;
+        // ctx.m_ImageRealEntry = 0x140000000;
         if (ctx.m_ImageRealEntry)
             ntheader->OptionalHeader.AddressOfEntryPoint = (ULONG)(ctx.m_ImageRealEntry - ctx.m_ImageBase);
 

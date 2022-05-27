@@ -272,13 +272,14 @@ public:
 	bool m_HasCache;
 	bool m_FindChecks;
 	bool m_Bitmap;
-	bool m_History;
+	bool m_Obfu;
 	bool m_SkipSecondCall;
 	bool m_SkipFourthCall;;
 	bool m_PatchRuntime;
 	bool m_RebuildImageSize = false;
 	bool m_RebuildSectionSizes = false;
 	bool m_DisableRebase = false;
+	bool m_Sandbox = false;
 
 	uint64_t m_KSharedUserDataBase;
 	uint64_t m_KSharedUserDataEnd;
@@ -330,6 +331,7 @@ public:
 	std::string m_SaveWritten;
 	std::string m_SaveRead;
 
+	std::vector<std::tuple<uintptr_t, uint8_t>> m_Undo;
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Written;
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Read;
 	std::vector<bool> m_WrittenBitmap;
@@ -343,7 +345,17 @@ void* uc_memcpy( uc_engine* uc, uintptr_t _Dst, void const* _Src, size_t _Size);
 
 int uc_memcmp( uc_engine* uc, uintptr_t _Dst, void const* _Src, size_t _Size);
 
-void* uc_memset( uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size);
+void* uc_memset(uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size);
+
+void ResetRegisters(uc_engine* uc, PeEmulation& ctx);
+
+void SaveResult(uc_engine* uc, const uintptr_t& fn_address, PeEmulation& ctx);
+
+int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename);
+
+int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_address);
+
+void RegisterAPIs(PeEmulation& ctx);
 
 
 #define API_FUNCTION_SIZE 8

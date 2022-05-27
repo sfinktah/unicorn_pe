@@ -108,15 +108,8 @@ namespace _ {
     template <int start = 0, int end = 0, typename Container>
     constexpr auto pyslice_span(Container&& container) {
         ADJUST_INDICES(start, end, (int)array.size());
-        //if constexpr (end > 0)
-        //{
         return gsl::span(std::begin(std::forward<Container>(container)) + start, std::begin(std::forward<Container>(container)) + end);
-        //}
-        //else
-        //{
-        return gsl::span(std::begin(std::forward<Container>(container)) + start, std::end(std::forward<Container>(container)) + end);
-        //}
-    }
+	}
 
     /**
      * Creates an array of elements split into groups the length of `size`.

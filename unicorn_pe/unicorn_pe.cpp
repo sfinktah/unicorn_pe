@@ -903,7 +903,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     }
                     cs_free(insn, count);
                 }
-                if (ctx->m_History) {
+                if (ctx->m_Obfu) {
                     static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
                     if (!pystring::startswith(insn[ii].mnemonic, "nop")) {
                         FuncTailInsn fti;
@@ -1020,7 +1020,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
 
                     if (1 && multimatch(history, {
                                                      // push rbp
-                                                     // lea  rbp, [rel 0x144698cef (ArxanHelper_0)]
+                                                     // lea  rbp, [rel 0x144698cef]
                                                      // xchg qword ptr [rsp], rbp
                                                      // ret
                                                      R"(push rbp)",
@@ -1378,7 +1378,7 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
 
     switch (type) {
         case UC_MEM_READ: {
-            if (!ctx->m_SaveRead.empty()) {
+            if (!ctx->m_SaveRead.empty() || ctx->m_Sandbox) {
                 if (address > 0x50000) {
                     switch (size) {
                         case 1:
@@ -1422,45 +1422,84 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
             }
         }
         case UC_MEM_WRITE: {
-            if (!ctx->m_SaveWritten.empty()) {
+            if (!ctx->m_SaveWritten.empty() || ctx->m_Sandbox) {
                 if (ctx->m_Bitmap && address >= ctx->m_ImageBase && address < ctx->m_ImageEnd) {
                     address -= ctx->m_ImageBase;
                     while (size-- > 0) {
                         ctx->m_WrittenBitmap[address++] = true;
                     }
                 } else if (address > 0x50000) {
-                    switch (size) {
-                        case 1:
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)value);
-                            break;
-                        case 2:
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
-                            break;
-                        case 4:
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 2), (uint8_t)(value >> 16));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 3), (uint8_t)(value >> 24));
-                            break;
-                        case 8:
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 2), (uint8_t)(value >> 16));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 3), (uint8_t)(value >> 24));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 4), (uint8_t)(value >> 32));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 5), (uint8_t)(value >> 40));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 6), (uint8_t)(value >> 48));
-                            ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 7), (uint8_t)(value >> 56));
-                            break;
-                        default:
-                            std::stringstream region;
-                            *outs << "UC_MEM_WRITE cannot handle size " << size << " to "
-                                  << "0x" << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
-                            uint64_t rip;
-                            uc_reg_read(uc, UC_X86_REG_RIP, &rip);
-                            if (ctx->FindAddressInRegion(rip, region))
-                                *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
+                    if (ctx->m_Sandbox) {
+                        uint64_t old_value;
+                        uc_mem_read(uc, address, &old_value, sizeof(old_value));
+                        switch (size) {
+                            case 1:
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)old_value);
+                                break;
+                            case 2:
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)(old_value >> 0));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(old_value >> 8));
+                                break;
+                            case 4:
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)(old_value >> 0));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(old_value >> 8));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 2), (uint8_t)(old_value >> 16));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 3), (uint8_t)(old_value >> 24));
+                                break;
+                            case 8:
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)(old_value >> 0));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(old_value >> 8));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 2), (uint8_t)(old_value >> 16));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 3), (uint8_t)(old_value >> 24));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 4), (uint8_t)(old_value >> 32));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 5), (uint8_t)(old_value >> 40));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 6), (uint8_t)(old_value >> 48));
+                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 7), (uint8_t)(old_value >> 56));
+                                break;
+                            default:
+                                std::stringstream region;
+                                *outs << "UC_MEM_WRITE cannot handle size " << size << " to "
+                                      << "0x" << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
+                                uint64_t rip;
+                                uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+                                if (ctx->FindAddressInRegion(rip, region))
+                                    *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
+                        }
+                    }
+                    if (!ctx->m_SaveWritten.empty()) {
+                        switch (size) {
+                            case 1:
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)value);
+                                break;
+                            case 2:
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
+                                break;
+                            case 4:
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 2), (uint8_t)(value >> 16));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 3), (uint8_t)(value >> 24));
+                                break;
+                            case 8:
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 2), (uint8_t)(value >> 16));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 3), (uint8_t)(value >> 24));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 4), (uint8_t)(value >> 32));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 5), (uint8_t)(value >> 40));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 6), (uint8_t)(value >> 48));
+                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 7), (uint8_t)(value >> 56));
+                                break;
+                            default:
+                                std::stringstream region;
+                                *outs << "UC_MEM_WRITE cannot handle size " << size << " to "
+                                      << "0x" << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
+                                uint64_t rip;
+                                uc_reg_read(uc, UC_X86_REG_RIP, &rip);
+                                if (ctx->FindAddressInRegion(rip, region))
+                                    *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
+                        }
                     }
                     //*outs << "UC_MEM_WRITE: " << std::hex << ctx->NormaliseBase(address) << "\n";
                     //uc_emu_stop(uc);
@@ -1923,6 +1962,43 @@ void WriteMemoryAccesses(std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const
         vec.clear();
     }
 }
+
+void RestoreWrittenMemory(uc_engine* uc, std::vector<std::tuple<uintptr_t, uint8_t>>& vec) {
+    if (vec.size()) {
+        std::sort(vec.begin(), vec.end(), [](const auto& lhs, const auto& rhs) { return std::get<0>(lhs) < std::get<0>(rhs); });
+        auto last = std::unique(vec.begin(), vec.end(), [](const auto& lhs, const auto& rhs) { return std::get<0>(lhs) == std::get<0>(rhs); });
+        vec.erase(last, vec.end());
+        auto len_read                 = vec.size();
+        uintptr_t last_address        = 0;
+        uintptr_t range_start_address = 0;
+        uintptr_t range_start_index   = 0;
+        std::vector<uint8_t> to_write;
+        for (size_t i = 0; i < len_read; ++i) {
+            auto [address, data] = vec[i];
+            if (!last_address || last_address + 1 == address) {
+                if (!last_address) {
+                    range_start_index   = i;
+                    range_start_address = address;
+                }
+                to_write.emplace_back(data);
+            } else if (last_address + 1 > address) {
+                *outs << "error (unsorted or non-unique list): last_address: " << std::hex << last_address << " address: " << address << "\n";
+            } else {
+                if (i > range_start_index && !to_write.empty()) {
+                    uc_mem_write(uc, range_start_address, to_write.data(), to_write.size());
+                }
+                to_write.clear();
+                range_start_address = address;
+                range_start_index   = i;
+                to_write.emplace_back(data);
+            }
+
+            last_address = address;
+        }
+        vec.clear();
+    }
+}
+
 uc_err patch_nops(uc_engine* uc, uint64_t address, size_t count) {
     // stored as an array of [9][8] (not ragged)
     const unsigned char nop_bytes[][8] = {
@@ -2004,6 +2080,406 @@ void* uc_memset(
 
 PeEmulation g_ctx;
 
+void ResetRegisters(uc_engine* uc, PeEmulation& ctx) {
+    uc_mem_write(uc, ctx.m_InitReg.Rsp, &ctx.m_ImageEnd, sizeof(ctx.m_ImageEnd));
+    uc_mem_map(uc, ctx.m_ImageEnd, 0x1000, UC_PROT_EXEC | UC_PROT_READ);
+
+    uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
+    uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
+    uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
+    uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
+    uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
+    uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
+    uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
+    uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
+    uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
+    uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
+    uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
+    uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
+    uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
+    uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
+    uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
+    uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+}
+
+void SaveResult(uc_engine* uc, const uintptr_t& fn_address, PeEmulation& ctx) {
+    uint64_t result_rsp = 0;
+    uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
+    *outs << "RSP: 0x" << std::hex << result_rsp << "\n"
+          << std::dec;
+    auto ptr        = result_rsp;
+    uintptr_t value = 0xdeadbeef;
+    for (ptr = 0x4ffb8; ptr > 0x4ff50; ptr -= 8) {
+        ptrdiff_t i = ptr - result_rsp;
+        uc_mem_read(uc, ptr, &value, 8);
+        *outs << "uc_emu_start stack: " << std::hex << fn_address << std::dec << " " << i << ": 0x" << std::hex << ptr << ": 0x" << std::hex << ctx.NormaliseBase(value) << std::dec << "\n";
+        if (i == 0) break;
+    }
+
+    fs::path read_path(ctx.m_SaveRead);
+    fs::path written_path(ctx.m_SaveWritten);
+
+    read_path /= read_path / "read";
+    written_path = written_path / "written";
+
+    if (ctx.m_Bitmap) {
+        WriteMemoryBitmapAccesses(uc, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
+    } else {
+        uint64_t bytes_written = 0;
+        uint64_t bytes_read    = 0;
+
+        bytes_written += ctx.m_Written.size();
+        bytes_read += ctx.m_Read.size();
+        WriteMemoryAccesses(ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
+        WriteMemoryAccesses(ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
+        if (ctx.m_Sandbox) {
+            RestoreWrittenMemory(ctx.m_uc, ctx.m_Undo);
+        }
+        *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
+    }
+}
+
+std::vector<mem::pointer> scan_all_with_iteratee(mem::region r, mem::pattern p, std::function<uintptr_t(uintptr_t)> iter) {
+    std::vector<mem::pointer> found;
+    for (mem::pointer ea : mem::scan_all(p, r)) {
+        auto ptr = iter(ea.as<uintptr_t>());
+        if (ptr) found.emplace_back(ptr);
+    }
+    return found;
+}
+
+size_t scan_all_do(mem::region r, mem::pattern p, std::function<void(uintptr_t)> iter) {
+    size_t counter = 0;
+    for (mem::pointer ea : mem::scan_all(p, r)) {
+        iter(ea.as<uintptr_t>());
+        ++counter;
+    }
+    LOG("scan_all_do found {} matches for {}", counter, p.to_string());
+	return counter;
+}
+
+std::string megalookup(uintptr_t addr) {
+    if (auto it = megaFuncNames.find(addr - 0x140000000); it != megaFuncNames.end()) {
+        return fmt::format("{}", it->second);
+    }
+    if (megafunc && megafunc->Contains(addr - 0x140000000)) {
+        return pystring::rstrip(megafunc->Lookup(addr - 0x140000000));
+    }
+
+    return fmt::format("{:#x}", addr);
+}
+
+int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
+    virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
+    virtual_buffer_t RebuildSectionBuffer;
+    mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
+    auto m_normalise_base = [&](mem::pointer& ea) {
+        return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+    };
+
+    uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
+
+    auto ntheader = RtlImageNtHeader(imagebuf.GetBuffer());
+
+    auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
+                                                 sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
+
+    auto SectionCount = ntheader->FileHeader.NumberOfSections;
+    for (USHORT i = 0; i < SectionCount; ++i) {
+        SectionHeader[i].PointerToRawData = SectionHeader[i].VirtualAddress;
+        SectionHeader[i].SizeOfRawData    = SectionHeader[i].Misc.VirtualSize;
+    }
+
+    {
+        DWORD SectionAlignment;
+
+        if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
+            auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
+            SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
+        } else {
+            SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
+        }
+
+        auto correct_size = ntheader->OptionalHeader.BaseOfCode;
+
+        for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
+            DWORD SectionSize = SectionHeader[i].Misc.VirtualSize;
+            SectionSize       = (DWORD)ALIGN_UP_MIN1(
+                std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
+                SectionAlignment);
+            *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
+                                 SectionHeader[i].Name,
+                                 SectionHeader[i].Misc.VirtualSize,
+                                 SectionSize,
+                                 SectionHeader[i].VirtualAddress,
+                                 correct_size,
+                                 SectionHeader[i].SizeOfRawData,
+                                 SectionHeader[i].PointerToRawData)
+                  << "\n";
+
+            correct_size += SectionSize;
+            if (ctx.m_RebuildSectionSizes) {
+                SectionHeader[i].Misc.VirtualSize = SectionSize;
+            }
+        }
+
+        LOG("ImageBase: {:8x}", ntheader->OptionalHeader.ImageBase);
+        LOG("ImageSize: {:8x}", ntheader->OptionalHeader.SizeOfImage);
+        if (ntheader->OptionalHeader.SizeOfImage != correct_size && ctx.m_RebuildImageSize) {
+            ntheader->OptionalHeader.SizeOfImage = correct_size;
+            LOG("ImageSize changed to: {:8x}", correct_size);
+        }
+
+        if (ctx.m_DisableRebase) {
+            ntheader->OptionalHeader.DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+        }
+    }
+
+    if (ctx.m_PatchRuntime) {
+        mem::scan(mem::pattern("01 b9 2f a9"), r)
+            .or_else([] { LOG("Couldn't patch launcher detection"); })
+            .and_then([&](auto m) {
+                LOG("Patching launcher detection at {:#x}", m_normalise_base(m));
+                m.sub(9).rip(4).put_bytes(mem::pattern("b8 01 00 00 00 c3"));
+            });
+
+        if (ctx.m_Calls.size() < 3)
+            LOG("Couldn't find second call to patch for runtime execution");
+        else {
+            auto& [call, target] = ctx.m_Calls[2];
+            LOG("Patching runtime tamper detection at offset {:#x}", call);
+            patch_nops((char*)imagebuf.at(call), 5);
+        }
+    }
+
+    // ctx.RebuildSection(imagebuf.GetBuffer(), (ULONG)(ctx.m_ImageEnd - ctx.m_ImageBase), RebuildSectionBuffer);
+
+    // ctx.m_ImageRealEntry = 0x140000000;
+    if (ctx.m_ImageRealEntry)
+        ntheader->OptionalHeader.AddressOfEntryPoint = (ULONG)(ctx.m_ImageRealEntry - ctx.m_ImageBase);
+
+    auto dumpfile = filename + ".upeed";
+
+    FILE* fp = fopen(dumpfile.c_str(), "wb");
+
+    fwrite(imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase, 1, fp);
+
+    //if (RebuildSectionBuffer.GetBuffer())
+    //    fwrite(RebuildSectionBuffer.GetBuffer(), RebuildSectionBuffer.GetLength(), 1, fp);
+
+    fclose(fp);
+    return 0;
+}
+
+int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_address) {
+    /*
+            // Copy of StackBalance to create proper stack for execution of code (prologue_address)
+        
+            140001000  6A 01                                         push    1
+            140001002  6A 02                                         push    2
+            140001004  6A 03                                         push    3
+            140001006  6A 04                                         push    4
+            140001008
+            140001008                                TheJudge:
+            140001008  E8 01 00 00 00                                call    TheWitch
+            14000100D  CC                                            int     3
+            14000100E
+            14000100E
+            14000100E                                TheWitch:
+            14000100E  E8 01 00 00 00                                call    TheCorpsegrinder
+            140001013  CC                                            int     3
+            140001014
+            140001014
+            140001014                                TheCorpsegrinder:
+            140001014  E8 01 00 00 00                                call    TheBalancer
+            140001019  CC                                            int     3
+            14000101A
+            14000101A
+            14000101A                                TheBalancer:
+            14000101A  41 50                                         push    r8
+            14000101C  41 55                                         push    r13
+            14000101E  41 54                                         push    r12
+            140001020  41 57                                         push    r15
+            140001022  56                                            push    rsi
+            140001023  52                                            push    rdx
+            140001024  53                                            push    rbx
+            140001025  41 51                                         push    r9
+            140001027  50                                            push    rax
+            140001028  41 56                                         push    r14
+            14000102A  41 52                                         push    r10
+            14000102C  57                                            push    rdi
+            14000102D  41 53                                         push    r11
+            14000102F  48 8D A4 24 00 FF FF FF                       lea     rsp, [rsp-100h]
+            140001037  66 44 0F 11 3C 24                             movupd  xmmword ptr [rsp], xmm15
+            14000103D  66 0F 11 7C 24 10                             movupd  xmmword ptr [rsp+10h], xmm7
+            140001043  66 0F 11 5C 24 20                             movupd  xmmword ptr [rsp+20h], xmm3
+            140001049  66 44 0F 11 54 24 30                          movupd  xmmword ptr [rsp+30h], xmm10
+            140001050  66 0F 11 74 24 40                             movupd  xmmword ptr [rsp+40h], xmm6
+            140001056  66 0F 11 6C 24 50                             movupd  xmmword ptr [rsp+50h], xmm5
+            14000105C  66 0F 11 4C 24 60                             movupd  xmmword ptr [rsp+60h], xmm1
+            140001062  66 44 0F 11 4C 24 70                          movupd  xmmword ptr [rsp+70h], xmm9
+            140001069  66 44 0F 11 B4 24 80 00 00 00                 movupd  xmmword ptr [rsp+80h], xmm14
+            140001073  66 44 0F 11 84 24 90 00 00 00                 movupd  xmmword ptr [rsp+90h], xmm8
+            14000107D  66 44 0F 11 A4 24 A0 00 00 00                 movupd  xmmword ptr [rsp+0A0h], xmm12
+            140001087  66 0F 11 94 24 B0 00 00 00                    movupd  xmmword ptr [rsp+0B0h], xmm2
+            140001090  66 44 0F 11 9C 24 C0 00 00 00                 movupd  xmmword ptr [rsp+0C0h], xmm11
+            14000109A  66 0F 11 84 24 D0 00 00 00                    movupd  xmmword ptr [rsp+0D0h], xmm0
+            1400010A3  66 44 0F 11 AC 24 E0 00 00 00                 movupd  xmmword ptr [rsp+0E0h], xmm13
+            1400010AD  66 0F 11 A4 24 F0 00 00 00                    movupd  xmmword ptr [rsp+0F0h], xmm4
+            1400010AD
+            1400010B6  6A 10                                         push    10h
+            1400010B8  48 F7 C4 0F 00 00 00                          test    rsp, 0Fh
+            1400010BF  75 02                                         jnz     short skip_balance
+            1400010C1  6A 18                                         push    18h
+            1400010C3
+            1400010C3                                skip_balance:
+            1400010C3  48 83 EC 08                                   sub     rsp, 8
+                       48 89 e5                                      mov     rbp, rsp
+            1400010C7  FF 15 A2 00 00 00                             call    qword ptr cs:TheChecker
+            1400010CD  48 03 64 24 08                                add     rsp, [rsp+8]
+            1400010D2  66 44 0F 10 3C 24                             movupd  xmm15, xmmword ptr [rsp]
+            1400010D8  66 0F 10 7C 24 10                             movupd  xmm7, xmmword ptr [rsp+10h]
+            1400010DE  66 0F 10 5C 24 20                             movupd  xmm3, xmmword ptr [rsp+20h]
+            1400010E4  66 44 0F 10 54 24 30                          movupd  xmm10, xmmword ptr [rsp+30h]
+            1400010EB  66 0F 10 74 24 40                             movupd  xmm6, xmmword ptr [rsp+40h]
+            1400010F1  66 0F 10 6C 24 50                             movupd  xmm5, xmmword ptr [rsp+50h]
+            1400010F7  66 0F 10 4C 24 60                             movupd  xmm1, xmmword ptr [rsp+60h]
+            1400010FD  66 44 0F 10 4C 24 70                          movupd  xmm9, xmmword ptr [rsp+70h]
+            140001104  66 44 0F 10 B4 24 80 00 00 00                 movupd  xmm14, xmmword ptr [rsp+80h]
+            14000110E  66 44 0F 10 84 24 90 00 00 00                 movupd  xmm8, xmmword ptr [rsp+90h]
+            140001118  66 44 0F 10 A4 24 A0 00 00 00                 movupd  xmm12, xmmword ptr [rsp+0A0h]
+            140001122  66 0F 10 94 24 B0 00 00 00                    movupd  xmm2, xmmword ptr [rsp+0B0h]
+            14000112B  66 44 0F 10 9C 24 C0 00 00 00                 movupd  xmm11, xmmword ptr [rsp+0C0h]
+            140001135  66 0F 10 84 24 D0 00 00 00                    movupd  xmm0, xmmword ptr [rsp+0D0h]
+            14000113E  66 44 0F 10 AC 24 E0 00 00 00                 movupd  xmm13, xmmword ptr [rsp+0E0h]
+            140001148  66 0F 10 A4 24 F0 00 00 00                    movupd  xmm4, xmmword ptr [rsp+0F0h]
+            140001151  48 8D A4 24 00 01 00 00                       lea     rsp, [rsp+100h]
+            140001159  41 5B                                         pop     r11
+            14000115B  5F                                            pop     rdi
+            14000115C  41 5A                                         pop     r10
+            14000115E  41 5E                                         pop     r14
+            140001160  58                                            pop     rax
+            140001161
+            140001161  41 59                                         pop     r9
+            140001163  5B                                            pop     rbx
+            140001164  5A                                            pop     rdx
+            140001165  5E                                            pop     rsi
+            140001166  41 5F                                         pop     r15
+            140001168  41 5C                                         pop     r12
+            14000116A  41 5D                                         pop     r13
+            14000116C  41 58                                         pop     r8
+            14000116E  C3                                            retn
+            14000116E
+            14000116F                                TheChecker:
+            14000116F  00 00 00 00 00 00 00 00                       dq    0
+        */
+
+    unsigned char prologue_bytes[] = {
+        0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc,
+        0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc, 0x41, 0x50,
+        0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51, 0x50, 0x41,
+        0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0, 0xff, 0xff,
+        0xff, 0x66, 0x44, 0xf, 0x11, 0x3c, 0x24, 0x66, 0xf, 0x11, 0x7c, 0x24, 0x10,
+        0x66, 0xf, 0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x11, 0x54, 0x24, 0x30,
+        0x66, 0xf, 0x11, 0x74, 0x24, 0x40, 0x66, 0xf, 0x11, 0x6c, 0x24, 0x50, 0x66,
+        0xf, 0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x11, 0x4c, 0x24, 0x70, 0x66,
+        0x44, 0xf, 0x11, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0x84,
+        0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xa4, 0x24, 0xa0, 0x0, 0x0,
+        0x0, 0x66, 0xf, 0x11, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11,
+        0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x84, 0x24, 0xd0, 0x0, 0x0,
+        0x0, 0x66, 0x44, 0xf, 0x11, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11,
+        0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf, 0x0, 0x0,
+        0x0, 0x75, 0x2, 0x6a, 0x18, 0x48, 0x83, 0xec, 0x8,
+
+        0x48, 0x89, 0xe5,
+
+        0xff, 0x15, 0xa2, 0x0, 0x0,
+        0x0, 0x48, 0x3, 0x64, 0x24, 0x8, 0x66, 0x44, 0xf, 0x10, 0x3c, 0x24, 0x66, 0xf,
+        0x10, 0x7c, 0x24, 0x10, 0x66, 0xf, 0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf,
+        0x10, 0x54, 0x24, 0x30, 0x66, 0xf, 0x10, 0x74, 0x24, 0x40, 0x66, 0xf, 0x10,
+        0x6c, 0x24, 0x50, 0x66, 0xf, 0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x10,
+        0x4c, 0x24, 0x70, 0x66, 0x44, 0xf, 0x10, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66,
+        0x44, 0xf, 0x10, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xa4,
+        0x24, 0xa0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0,
+        0x66, 0x44, 0xf, 0x10, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x84,
+        0x24, 0xd0, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xac, 0x24, 0xe0, 0x0, 0x0,
+        0x0, 0x66, 0xf, 0x10, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x48, 0x8d, 0xa4, 0x24,
+        0x0, 0x1, 0x0, 0x0, 0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59,
+        0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
+
+    uc_err err;
+    err = uc_mem_write(uc, prologue_address, prologue_bytes, sizeof(prologue_bytes));
+    err = uc_mem_write(uc, prologue_address + sizeof(prologue_bytes), &start_address, 8);
+    return sizeof(prologue_bytes);
+}
+
+void RegisterAPIs(PeEmulation& ctx) {
+    if (!ctx.m_IsKernel) {
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetSystemTimeAsFileTime", EmuGetSystemTimeAsFileTime, 1);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentThreadId", EmuGetCurrentThreadId, 0);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcessId", EmuGetCurrentProcessId, 0);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcess", EmuGetCurrentProcess, 0);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "QueryPerformanceCounter", EmuQueryPerformanceCounter, 1);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "LoadLibraryExW", EmuLoadLibraryExW, 3);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "LoadLibraryA", EmuLoadLibraryA, 1);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetProcAddress", EmuGetProcAddress, 2);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetModuleHandleA", EmuGetModuleHandleA, 1);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetLastError", EmuGetLastError, 0);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionAndSpinCount", EmuInitializeCriticalSectionAndSpinCount, 2);
+
+        if (!ctx.RegisterAPIEmulation(L"kernelbase.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3))
+            ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3);
+
+        ctx.RegisterAPIEmulation(L"ntdll.dll", "RtlDeleteCriticalSection", EmuDeleteCriticalSection, 1);
+        ctx.RegisterAPIEmulation(L"ntdll.dll", "RtlIsProcessorFeaturePresent", EmuRtlIsProcessorFeaturePresent, 1);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetProcessAffinityMask", EmuGetProcessAffinityMask, 1);
+
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "TlsAlloc", EmuTlsAlloc, 0);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "TlsSetValue", EmuTlsSetValue, 2);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "TlsFree", EmuTlsFree, 1);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "LocalAlloc", EmuLocalAlloc, 2);
+        ctx.RegisterAPIEmulation(L"ntdll.dll", "NtProtectVirtualMemory", EmuNtProtectVirtualMemory, 5);
+        // ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualProtectEx", EmuVirtualProtectEx, 6);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualProtect", EmuVirtualProtect, 4);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualQueryEx", EmuVirtualQueryEx, 4);
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualQuery", EmuVirtualQuery, 3);
+
+        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetSystemInfo", EmuGetSystemInfo, 1);
+
+    } else {
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExAllocatePool", EmuExAllocatePool, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExAllocatePoolWithTag", EmuExAllocatePool, 3);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "NtQuerySystemInformation", EmuNtQuerySystemInformation, 4);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ZwQuerySystemInformation", EmuNtQuerySystemInformation, 4);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExFreePool", EmuExFreePool, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExFreePoolWithTag", EmuExFreePoolWithTag, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "IoAllocateMdl", EmuIoAllocateMdl, 5);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmProbeAndLockPages", EmuMmProbeAndLockPages, 3);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmMapLockedPagesSpecifyCache", EmuMmMapLockedPagesSpecifyCache, 6);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeQueryActiveProcessors", EmuKeQueryActiveProcessors, 0);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeSetSystemAffinityThread", EmuKeSetSystemAffinityThread, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeRevertToUserAffinityThread", EmuKeRevertToUserAffinityThread, 0);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmUnlockPages", EmuMmUnlockPages, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "IoFreeMdl", EmuIoFreeMdl, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlGetVersion", EmuRtlGetVersion, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "DbgPrint", EmuDbgPrint, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeInitializeMutex", EmuKeInitializeMutex, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlInitUnicodeString", EmuRtlInitUnicodeString, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeWaitForSingleObject", EmuKeWaitForSingleObject, 5);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeWaitForMutexObject", EmuKeWaitForSingleObject, 5);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeReleaseMutex", EmuKeReleaseMutex, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "srand", Emusrand, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "rand", Emurand, 0);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlZeroMemory", EmuRtlZeroMemory, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlCopyMemory", EmuRtlCopyMemory, 3);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlFillMemory", EmuRtlFillMemory, 3);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "wcsstr", Emuwcsstr, 2);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmIsAddressValid", EmuMmIsAddressValid, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExGetPreviousMode", EmuExGetPreviousMode, 1);
+        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "__C_specific_handler", Emu__C_specific_handler, 4);
+    }
+}
+
 int main(int argc, char** argv) {
     using namespace blackbone;
 
@@ -2015,7 +2491,7 @@ int main(int argc, char** argv) {
     outs      = &std::cout;
 
     if (!cmdl(1)) {
-        printf("usage: unicorn_pe (filename) [--find] [--disasm] [--dump] [--bitmap] [--save-written=PATH] [--save-read=PATH]\n");
+        printf("usage: unicorn_pe (filename) [--find] [--disasm] [--dump] [--bitmap] [--obfu] [--save-written=PATH] [--save-read=PATH]\n");
         return 0;
     }
 
@@ -2031,10 +2507,6 @@ int main(int argc, char** argv) {
     for (auto& param : cmdl.params())
         *outs << '\t' << param.first << " : " << param.second << '\n';
 
-    //*outs << "\nValues for all `--ea` parameters:\n";
-    //for (auto& param : cmdl.params("ea"))  // iterate on all params called "input"
-    //    *outs << '\t' << param.first << " : " << param.second << '\n';
-
     //*outs << "\nValues for all multiple-use parameters:\n";
     //for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
     //    if (cmdl.params(param).size() > 1) {
@@ -2048,6 +2520,10 @@ int main(int argc, char** argv) {
     std::wstring wfilename;
     ANSIToUnicode(smart_path(filename), wfilename);
 
+    if (!fs::exists(wfilename)) {
+        LOG("File does not exist: {}", narrow(wfilename));
+    }
+
     bool bKernel              = true;
     ctx.m_IsKernel            = cmdl["k"];
     ctx.m_Disassemble         = cmdl["disasm"];
@@ -2058,7 +2534,7 @@ int main(int argc, char** argv) {
     ctx.m_FindChecks          = cmdl["find"];
     ctx.m_SkipSecondCall      = cmdl["skip-second-call"];
     ctx.m_SkipFourthCall      = cmdl["skip-4th-call"];
-    ctx.m_History             = cmdl["history"];
+    ctx.m_Obfu                = cmdl["obfu"];
     ctx.m_PatchRuntime        = cmdl["patch-runtime"];
     ctx.m_RebuildImageSize    = cmdl["rebuild-size"];
     ctx.m_RebuildSectionSizes = cmdl["rebuild-sections"];
@@ -2150,9 +2626,6 @@ int main(int argc, char** argv) {
 
     uc_mem_map(uc, ctx.m_HeapBase, ctx.m_HeapEnd - ctx.m_HeapBase, (ctx.m_IsKernel) ? UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC : UC_PROT_READ | UC_PROT_WRITE);
 
-    if (!fs::exists(wfilename)) {
-        LOG("File does not exist: {}", narrow(wfilename));
-    }
     auto MapResult = ctx.thisProc.mmap().MapImage(wfilename,
                                                   RebaseProcess | ManualImports | NoSxS | NoExceptions | NoDelayLoad | NoTLS | NoExceptions | NoExec,
                                                   ManualMapCallback, &ctx, 0, 0x140000000, PreManualMapCallback);
@@ -2182,70 +2655,7 @@ int main(int argc, char** argv) {
     printf("ctx.m_LastRipModule: 0x%llx\n", ctx.m_LastRipModule);
     printf("ctx.m_ExecuteFromRip: 0x%llx\n", ctx.m_ExecuteFromRip);
 
-    if (!ctx.m_IsKernel) {
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetSystemTimeAsFileTime", EmuGetSystemTimeAsFileTime, 1);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentThreadId", EmuGetCurrentThreadId, 0);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcessId", EmuGetCurrentProcessId, 0);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetCurrentProcess", EmuGetCurrentProcess, 0);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "QueryPerformanceCounter", EmuQueryPerformanceCounter, 1);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "LoadLibraryExW", EmuLoadLibraryExW, 3);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "LoadLibraryA", EmuLoadLibraryA, 1);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetProcAddress", EmuGetProcAddress, 2);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetModuleHandleA", EmuGetModuleHandleA, 1);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetLastError", EmuGetLastError, 0);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionAndSpinCount", EmuInitializeCriticalSectionAndSpinCount, 2);
-
-        if (!ctx.RegisterAPIEmulation(L"kernelbase.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3))
-            ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3);
-
-        ctx.RegisterAPIEmulation(L"ntdll.dll", "RtlDeleteCriticalSection", EmuDeleteCriticalSection, 1);
-        ctx.RegisterAPIEmulation(L"ntdll.dll", "RtlIsProcessorFeaturePresent", EmuRtlIsProcessorFeaturePresent, 1);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetProcessAffinityMask", EmuGetProcessAffinityMask, 1);
-
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "TlsAlloc", EmuTlsAlloc, 0);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "TlsSetValue", EmuTlsSetValue, 2);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "TlsFree", EmuTlsFree, 1);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "LocalAlloc", EmuLocalAlloc, 2);
-        ctx.RegisterAPIEmulation(L"ntdll.dll", "NtProtectVirtualMemory", EmuNtProtectVirtualMemory, 5);
-        // ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualProtectEx", EmuVirtualProtectEx, 6);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualProtect", EmuVirtualProtect, 4);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualQueryEx", EmuVirtualQueryEx, 4);
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "VirtualQuery", EmuVirtualQuery, 3);
-
-        ctx.RegisterAPIEmulation(L"kernel32.dll", "GetSystemInfo", EmuGetSystemInfo, 1);
-
-    } else {
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExAllocatePool", EmuExAllocatePool, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExAllocatePoolWithTag", EmuExAllocatePool, 3);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "NtQuerySystemInformation", EmuNtQuerySystemInformation, 4);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ZwQuerySystemInformation", EmuNtQuerySystemInformation, 4);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExFreePool", EmuExFreePool, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExFreePoolWithTag", EmuExFreePoolWithTag, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "IoAllocateMdl", EmuIoAllocateMdl, 5);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmProbeAndLockPages", EmuMmProbeAndLockPages, 3);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmMapLockedPagesSpecifyCache", EmuMmMapLockedPagesSpecifyCache, 6);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeQueryActiveProcessors", EmuKeQueryActiveProcessors, 0);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeSetSystemAffinityThread", EmuKeSetSystemAffinityThread, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeRevertToUserAffinityThread", EmuKeRevertToUserAffinityThread, 0);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmUnlockPages", EmuMmUnlockPages, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "IoFreeMdl", EmuIoFreeMdl, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlGetVersion", EmuRtlGetVersion, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "DbgPrint", EmuDbgPrint, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeInitializeMutex", EmuKeInitializeMutex, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlInitUnicodeString", EmuRtlInitUnicodeString, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeWaitForSingleObject", EmuKeWaitForSingleObject, 5);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeWaitForMutexObject", EmuKeWaitForSingleObject, 5);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "KeReleaseMutex", EmuKeReleaseMutex, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "srand", Emusrand, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "rand", Emurand, 0);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlZeroMemory", EmuRtlZeroMemory, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlCopyMemory", EmuRtlCopyMemory, 3);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "RtlFillMemory", EmuRtlFillMemory, 3);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "wcsstr", Emuwcsstr, 2);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "MmIsAddressValid", EmuMmIsAddressValid, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "ExGetPreviousMode", EmuExGetPreviousMode, 1);
-        ctx.RegisterAPIEmulation(L"ntoskrnl.exe", "__C_specific_handler", Emu__C_specific_handler, 4);
-    }
+    RegisterAPIs(ctx);
 
     memset(&ctx.m_InitReg, 0, sizeof(ctx.m_InitReg));
     ctx.m_InitReg.Rsp = ctx.m_StackEnd - 64;
@@ -2270,25 +2680,7 @@ int main(int argc, char** argv) {
     ctx.InitKSharedUserData();
 
     //return to image end when entrypoint is executed
-    uc_mem_write(uc, ctx.m_InitReg.Rsp, &ctx.m_ImageEnd, sizeof(ctx.m_ImageEnd));
-    uc_mem_map(uc, ctx.m_ImageEnd, 0x1000, UC_PROT_EXEC | UC_PROT_READ);
-
-    uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
-    uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
-    uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
-    uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
-    uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
-    uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
-    uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
-    uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
-    uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
-    uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
-    uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
-    uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
-    uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
-    uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
-    uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
-    uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+    ResetRegisters(uc, ctx);
 
     uc_hook_add(uc, &trace, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED | UC_HOOK_MEM_FETCH_PROT | UC_HOOK_MEM_WRITE_PROT,
                 InvalidRwxCallback, &ctx, 1, 0);
@@ -2304,35 +2696,11 @@ int main(int argc, char** argv) {
                 IntrCallback, &ctx, 1, 0);
 
     std::vector<std::tuple<std::string, uintptr_t>> fns;
-
-    uint64_t bytes_written = 0;
-    uint64_t bytes_read    = 0;
-
     if (ctx.m_StartAddresses.size()) {
         for (uintptr_t ptr : ctx.m_StartAddresses) {
             fns.emplace_back(fmt::format("start_{:x}", ptr), ptr);
         }
     }
-
-    auto scan_all_do = [](mem::region r, mem::pattern p,
-                          std::function<void(uintptr_t)> iter) {
-        size_t counter = 0;
-        for (mem::pointer ea : mem::scan_all(p, r)) {
-            iter(ea.as<uintptr_t>());
-            ++counter;
-        }
-        LOG("scan_all_do found {} matches for {}", counter, p.to_string());
-    };
-
-    auto scan_all_with_iteratee = [](mem::region r, mem::pattern p,
-                                     std::function<uintptr_t(uintptr_t)> iter) -> std::vector<mem::pointer> {
-        std::vector<mem::pointer> found;
-        for (mem::pointer ea : mem::scan_all(p, r)) {
-            auto ptr = iter(ea.as<uintptr_t>());
-            if (ptr) found.emplace_back(ptr);
-        }
-        return found;
-    };
 
     // --patch="14000100:66 90 E9 00 00 00 00" --patch= ...
     for (auto& param : cmdl.params("patch")) {
@@ -2344,64 +2712,44 @@ int main(int argc, char** argv) {
         } else
             LOG("patching: couldn't process {} as an address", st_addr);
     }
-    if (cmdl["rebuild"]) {
-    }
+
     {
         ctx.filename = filename;
         *outs << "Filename: " << ctx.filename << "\n";
 
-		std::vector<std::string> filenames { ctx.filename, "default.exe" };
+        std::vector<std::string> filenames{ctx.filename, "default.exe"};
         for (const auto& basename : filenames) {
-			auto fnJson = replace_extension(basename, ".funcs.json");
-			if (fs::exists(fnJson)) {
-				megafunc = new MegaFunc(fnJson);
-				LOG_INFO(__FUNCTION__ ": reversed location 0x140001000 to: %s", megafunc->Lookup(0x100).c_str());
-				break;
-			}
-		}
+            auto fnJson = replace_extension(basename, ".funcs.json");
+            if (fs::exists(fnJson)) {
+                megafunc = new MegaFunc(fnJson);
+                LOG_INFO(__FUNCTION__ ": reversed location 0x140001000 to: %s", megafunc->Lookup(0x100).c_str());
+                break;
+            }
+        }
 
         for (const auto& basename : filenames) {
-			auto fnJson = replace_extension(ctx.filename, ".names.json");
-			if (fs::exists(fnJson)) {
-				LOG("reading names from {}", fnJson);
-				std::ifstream infile(fnJson);
-				json j;
-				infile >> j;
+            auto fnJson = replace_extension(ctx.filename, ".names.json");
+            if (fs::exists(fnJson)) {
+                LOG("reading names from {}", fnJson);
+                std::ifstream infile(fnJson);
+                json j;
+                infile >> j;
 
-				for (auto& [name, value] : j.items()) {
-					if (value.is_number() && !value.empty() /* && value[0].is_array() && value[0].size() == 2*/) {
-						auto [it1, happy1] = megaFuncNames.emplace(value, name);
-						//if (!happy1) {
-						//    auto existing = it1->second;
-						//    if (name != existing) {
-						//        //LOG_TRACE(__FUNCTION__ ": '0x14%07x' existing key '%s' clashed with '%s', overwriting.", start, existing.c_str(), name.c_str());
-						//        megaFuncNames[start] = name;
-						//    }
-						//}
-					}
-				}
-				break;
-			}
-		}
+                for (auto& [name, value] : j.items()) {
+                    if (value.is_number() && !value.empty()) {
+                        auto [it1, happy1] = megaFuncNames.emplace(value, name);
+                    }
+                }
+                break;
+            }
+        }
     }
 
     if (ctx.m_FindChecks) {
         virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
         uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
-        std::array<mem::pattern, 1> patterns{mem::pattern("48 8D 05 ?? ?? ?? ?? 48 89 45 ?? 48 8B 05 ?? ?? ?? ?? 48 F7 D8")};
         mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
         mem::region rr(ctx.m_ImageBase, ctx.m_ImageEnd - ctx.m_ImageBase);
-
-        auto megalookup = [&](uintptr_t addr) {
-            if (auto it = megaFuncNames.find(addr - 0x140000000); it != megaFuncNames.end()) {
-                return fmt::format("{}", it->second);
-            }
-            if (megafunc && megafunc->Contains(addr - 0x140000000)) {
-                return pystring::rstrip(megafunc->Lookup(addr - 0x140000000));
-            }
-
-            return fmt::format("{:#x}", addr);
-        };
 
         auto normalise_base = [&](uintptr_t ea) {
             return r.adjust_base(0x140000000, ea).as<uintptr_t>();
@@ -2415,10 +2763,10 @@ int main(int argc, char** argv) {
         std::deque<uintptr_t> find_refs;
         for (auto& param : cmdl.params("find-ref")) {
             for (auto expanded : sfinktah::string::brace_expander::expand(param.second)) {
-				if (auto addr = asQword(expanded, 16)) {
-					find_refs.emplace_back(*addr);
-				} else
-					LOG("couldn't process '{}' as an address", param.second);
+                if (auto addr = asQword(expanded, 16)) {
+                    find_refs.emplace_back(*addr);
+                } else
+                    LOG("couldn't process '{}' as an address", param.second);
             }
         }
 
@@ -2571,11 +2919,6 @@ int main(int argc, char** argv) {
         // return [e for e in FindInSegments(pattern, '.text', None, predicate_checksummers)]
 
         std::vector<mem::pointer> results;
-
-        //for (mem::pattern p : patterns) {
-        //    auto found = scan_all_with_iteratee(r, p, iteratee);
-        //    results.insert(results.end(), found.begin(), found.end());
-        //}
 
         auto found = scan_all_with_iteratee(r, mem::pattern("48 8D 05 ?? ?? ?? ?? 48 89 45 ?? 48 8B 05 ?? ?? ?? ??"), iteratee);
         results.insert(results.end(), found.begin(), found.end());
@@ -2843,28 +3186,8 @@ int main(int argc, char** argv) {
         // mbs(0x1417db93c).jmp(0x1417ed648); // skip initial decrypt
         // mbs(0x144874514).write_pattern("c3");
 
-        //src = asList(ArxanGetNextRangeGen('guide_143BE1040'));
-        //dst = asList(ArxanGetNextRangeGen('guide2_1432CBD71'));
         //for d, s in zip(dst, src) : ida_bytes.patch_bytes(d[0], ida_bytes.get_bytes(s[0], s[1]))
-        uc_mem_write(uc, ctx.m_InitReg.Rsp, &ctx.m_ImageEnd, sizeof(ctx.m_ImageEnd));
-        uc_mem_map(uc, ctx.m_ImageEnd, 0x1000, UC_PROT_EXEC | UC_PROT_READ);
-
-        uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
-        uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
-        uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
-        uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
-        uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
-        uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
-        uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
-        uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
-        uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
-        uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
-        uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
-        uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
-        uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
-        uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
-        uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
-        uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+        ResetRegisters(uc, ctx);
 
         *outs << "Function: " << ctx.filename << "\n";
         if (ctx.m_Bitmap) {
@@ -2872,37 +3195,22 @@ int main(int argc, char** argv) {
         }
         while (1) {
             {
-                virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
-                uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), 256);
-                HexDump::dumpMemory(*outs, (char*)imagebuf.GetBuffer() + 0x0, 256);
+                virtual_buffer_t imagebuf(128);
+                uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), 128);
+                HexDump::dumpMemory(*outs, (char*)imagebuf.GetBuffer() + 0x0, 128);
                 if (*(DWORD*)imagebuf.GetBuffer() == 0) {
                     break;
                 }
             }
 
-            if (ctx.m_History) {
+            if (ctx.m_Obfu) {
                 ctx.m_DisassembleForce = true;
                 err                    = uc_emu_start(uc, ctx.m_ExecuteFromRip, ctx.m_ImageEnd, 0, 1000);
                 LOG("-------------------- restart ----------------------");
                 if (1 == patch_anti_tamper()) {
                     TerminateProcess(GetCurrentProcess(), 2);
                 }
-                uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
-                uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
-                uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
-                uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
-                uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
-                uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
-                uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
-                uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
-                uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
-                uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
-                uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
-                uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
-                uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
-                uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
-                uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
-                uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+                ResetRegisters(uc, ctx);
                 visited.clear();
                 insn_count.clear();
                 call_targets.clear();
@@ -2925,198 +3233,18 @@ int main(int argc, char** argv) {
             *outs << "Looping...\n";
             break;
         }
-        uint64_t result_rsp = 0;
-        uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
-        *outs << "RSP: 0x" << std::hex << result_rsp << "\n"
-              << std::dec;
-        auto ptr        = result_rsp;
-        uintptr_t value = 0xdeadbeef;
-        for (ptr = 0x4ffb8; ptr > 0x4ff50; ptr -= 8) {
-            ptrdiff_t i = ptr - result_rsp;
-            uc_mem_read(uc, ptr, &value, 8);
-            *outs << "uc_emu_start stack: " << std::hex << 0x140CBC8B1 << std::dec << " " << i << ": 0x" << std::hex << ptr << ": 0x" << std::hex << ctx.NormaliseBase(value) << std::dec << "\n";
-            if (i == 0) break;
-        }
-
-        fs::path read_path(ctx.m_SaveRead);
-        fs::path written_path(ctx.m_SaveWritten);
-
-        read_path /= read_path / "read";
-        written_path = written_path / "written";
-
-        if (ctx.m_Bitmap) {
-            WriteMemoryBitmapAccesses(uc, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
-        } else {
-            bytes_written += ctx.m_Written.size();
-            bytes_read += ctx.m_Read.size();
-            WriteMemoryAccesses(ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
-            WriteMemoryAccesses(ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
-            *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
-        }
-    } else
+        uintptr_t fn_address = 0x140CBC8B1;
+        SaveResult(uc, fn_address, ctx);
+    } else {
         for (const auto& tpl : fns) {
-            ctx.filename = std::get<0>(tpl);
-
-            /*
-        // Copy of StackBalance to create proper stack for execution of code (prologue_address)
-        
-            140001000  6A 01                                         push    1
-            140001002  6A 02                                         push    2
-            140001004  6A 03                                         push    3
-            140001006  6A 04                                         push    4
-            140001008
-            140001008                                TheJudge:
-            140001008  E8 01 00 00 00                                call    TheWitch
-            14000100D  CC                                            int     3
-            14000100E
-            14000100E
-            14000100E                                TheWitch:
-            14000100E  E8 01 00 00 00                                call    TheCorpsegrinder
-            140001013  CC                                            int     3
-            140001014
-            140001014
-            140001014                                TheCorpsegrinder:
-            140001014  E8 01 00 00 00                                call    TheBalancer
-            140001019  CC                                            int     3
-            14000101A
-            14000101A
-            14000101A                                TheBalancer:
-            14000101A  41 50                                         push    r8
-            14000101C  41 55                                         push    r13
-            14000101E  41 54                                         push    r12
-            140001020  41 57                                         push    r15
-            140001022  56                                            push    rsi
-            140001023  52                                            push    rdx
-            140001024  53                                            push    rbx
-            140001025  41 51                                         push    r9
-            140001027  50                                            push    rax
-            140001028  41 56                                         push    r14
-            14000102A  41 52                                         push    r10
-            14000102C  57                                            push    rdi
-            14000102D  41 53                                         push    r11
-            14000102F  48 8D A4 24 00 FF FF FF                       lea     rsp, [rsp-100h]
-            140001037  66 44 0F 11 3C 24                             movupd  xmmword ptr [rsp], xmm15
-            14000103D  66 0F 11 7C 24 10                             movupd  xmmword ptr [rsp+10h], xmm7
-            140001043  66 0F 11 5C 24 20                             movupd  xmmword ptr [rsp+20h], xmm3
-            140001049  66 44 0F 11 54 24 30                          movupd  xmmword ptr [rsp+30h], xmm10
-            140001050  66 0F 11 74 24 40                             movupd  xmmword ptr [rsp+40h], xmm6
-            140001056  66 0F 11 6C 24 50                             movupd  xmmword ptr [rsp+50h], xmm5
-            14000105C  66 0F 11 4C 24 60                             movupd  xmmword ptr [rsp+60h], xmm1
-            140001062  66 44 0F 11 4C 24 70                          movupd  xmmword ptr [rsp+70h], xmm9
-            140001069  66 44 0F 11 B4 24 80 00 00 00                 movupd  xmmword ptr [rsp+80h], xmm14
-            140001073  66 44 0F 11 84 24 90 00 00 00                 movupd  xmmword ptr [rsp+90h], xmm8
-            14000107D  66 44 0F 11 A4 24 A0 00 00 00                 movupd  xmmword ptr [rsp+0A0h], xmm12
-            140001087  66 0F 11 94 24 B0 00 00 00                    movupd  xmmword ptr [rsp+0B0h], xmm2
-            140001090  66 44 0F 11 9C 24 C0 00 00 00                 movupd  xmmword ptr [rsp+0C0h], xmm11
-            14000109A  66 0F 11 84 24 D0 00 00 00                    movupd  xmmword ptr [rsp+0D0h], xmm0
-            1400010A3  66 44 0F 11 AC 24 E0 00 00 00                 movupd  xmmword ptr [rsp+0E0h], xmm13
-            1400010AD  66 0F 11 A4 24 F0 00 00 00                    movupd  xmmword ptr [rsp+0F0h], xmm4
-            1400010AD
-            1400010B6  6A 10                                         push    10h
-            1400010B8  48 F7 C4 0F 00 00 00                          test    rsp, 0Fh
-            1400010BF  75 02                                         jnz     short skip_balance
-            1400010C1  6A 18                                         push    18h
-            1400010C3
-            1400010C3                                skip_balance:
-            1400010C3  48 83 EC 08                                   sub     rsp, 8
-                       48 89 e5                                      mov     rbp, rsp
-            1400010C7  FF 15 A2 00 00 00                             call    qword ptr cs:TheChecker
-            1400010CD  48 03 64 24 08                                add     rsp, [rsp+8]
-            1400010D2  66 44 0F 10 3C 24                             movupd  xmm15, xmmword ptr [rsp]
-            1400010D8  66 0F 10 7C 24 10                             movupd  xmm7, xmmword ptr [rsp+10h]
-            1400010DE  66 0F 10 5C 24 20                             movupd  xmm3, xmmword ptr [rsp+20h]
-            1400010E4  66 44 0F 10 54 24 30                          movupd  xmm10, xmmword ptr [rsp+30h]
-            1400010EB  66 0F 10 74 24 40                             movupd  xmm6, xmmword ptr [rsp+40h]
-            1400010F1  66 0F 10 6C 24 50                             movupd  xmm5, xmmword ptr [rsp+50h]
-            1400010F7  66 0F 10 4C 24 60                             movupd  xmm1, xmmword ptr [rsp+60h]
-            1400010FD  66 44 0F 10 4C 24 70                          movupd  xmm9, xmmword ptr [rsp+70h]
-            140001104  66 44 0F 10 B4 24 80 00 00 00                 movupd  xmm14, xmmword ptr [rsp+80h]
-            14000110E  66 44 0F 10 84 24 90 00 00 00                 movupd  xmm8, xmmword ptr [rsp+90h]
-            140001118  66 44 0F 10 A4 24 A0 00 00 00                 movupd  xmm12, xmmword ptr [rsp+0A0h]
-            140001122  66 0F 10 94 24 B0 00 00 00                    movupd  xmm2, xmmword ptr [rsp+0B0h]
-            14000112B  66 44 0F 10 9C 24 C0 00 00 00                 movupd  xmm11, xmmword ptr [rsp+0C0h]
-            140001135  66 0F 10 84 24 D0 00 00 00                    movupd  xmm0, xmmword ptr [rsp+0D0h]
-            14000113E  66 44 0F 10 AC 24 E0 00 00 00                 movupd  xmm13, xmmword ptr [rsp+0E0h]
-            140001148  66 0F 10 A4 24 F0 00 00 00                    movupd  xmm4, xmmword ptr [rsp+0F0h]
-            140001151  48 8D A4 24 00 01 00 00                       lea     rsp, [rsp+100h]
-            140001159  41 5B                                         pop     r11
-            14000115B  5F                                            pop     rdi
-            14000115C  41 5A                                         pop     r10
-            14000115E  41 5E                                         pop     r14
-            140001160  58                                            pop     rax
-            140001161
-            140001161  41 59                                         pop     r9
-            140001163  5B                                            pop     rbx
-            140001164  5A                                            pop     rdx
-            140001165  5E                                            pop     rsi
-            140001166  41 5F                                         pop     r15
-            140001168  41 5C                                         pop     r12
-            14000116A  41 5D                                         pop     r13
-            14000116C  41 58                                         pop     r8
-            14000116E  C3                                            retn
-            14000116E
-            14000116F                                TheChecker:
-            14000116F  00 00 00 00 00 00 00 00                       dq    0
-        */
-
-            unsigned char prologue_bytes[] = {
-                0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc,
-                0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc, 0x41, 0x50,
-                0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51, 0x50, 0x41,
-                0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0, 0xff, 0xff,
-                0xff, 0x66, 0x44, 0xf, 0x11, 0x3c, 0x24, 0x66, 0xf, 0x11, 0x7c, 0x24, 0x10,
-                0x66, 0xf, 0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x11, 0x54, 0x24, 0x30,
-                0x66, 0xf, 0x11, 0x74, 0x24, 0x40, 0x66, 0xf, 0x11, 0x6c, 0x24, 0x50, 0x66,
-                0xf, 0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x11, 0x4c, 0x24, 0x70, 0x66,
-                0x44, 0xf, 0x11, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0x84,
-                0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xa4, 0x24, 0xa0, 0x0, 0x0,
-                0x0, 0x66, 0xf, 0x11, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11,
-                0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x84, 0x24, 0xd0, 0x0, 0x0,
-                0x0, 0x66, 0x44, 0xf, 0x11, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11,
-                0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf, 0x0, 0x0,
-                0x0, 0x75, 0x2, 0x6a, 0x18, 0x48, 0x83, 0xec, 0x8,
-
-                0x48, 0x89, 0xe5,
-
-                0xff, 0x15, 0xa2, 0x0, 0x0,
-                0x0, 0x48, 0x3, 0x64, 0x24, 0x8, 0x66, 0x44, 0xf, 0x10, 0x3c, 0x24, 0x66, 0xf,
-                0x10, 0x7c, 0x24, 0x10, 0x66, 0xf, 0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf,
-                0x10, 0x54, 0x24, 0x30, 0x66, 0xf, 0x10, 0x74, 0x24, 0x40, 0x66, 0xf, 0x10,
-                0x6c, 0x24, 0x50, 0x66, 0xf, 0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x10,
-                0x4c, 0x24, 0x70, 0x66, 0x44, 0xf, 0x10, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66,
-                0x44, 0xf, 0x10, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xa4,
-                0x24, 0xa0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0,
-                0x66, 0x44, 0xf, 0x10, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x84,
-                0x24, 0xd0, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xac, 0x24, 0xe0, 0x0, 0x0,
-                0x0, 0x66, 0xf, 0x10, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x48, 0x8d, 0xa4, 0x24,
-                0x0, 0x1, 0x0, 0x0, 0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59,
-                0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
-
+            ctx.filename                     = std::get<0>(tpl);
+            uintptr_t start_address          = std::get<1>(tpl);
             uintptr_t base_address           = ctx.m_ImageEnd;
             const uintptr_t prologue_address = base_address + 0x100;
-            uintptr_t dst                    = std::get<1>(tpl);
-            err                              = uc_mem_write(uc, prologue_address, prologue_bytes, sizeof(prologue_bytes));
-            err                              = uc_mem_write(uc, prologue_address + sizeof(prologue_bytes), &dst, 8);
 
-            uc_mem_write(uc, ctx.m_InitReg.Rsp, &ctx.m_ImageEnd, sizeof(ctx.m_ImageEnd));
-            uc_mem_map(uc, ctx.m_ImageEnd, 0x1000, UC_PROT_EXEC | UC_PROT_READ);
+            auto prologue_size = WritePrologue(uc, prologue_address, start_address);
 
-            uc_reg_write(uc, UC_X86_REG_RAX, &ctx.m_InitReg.Rax);
-            uc_reg_write(uc, UC_X86_REG_RBX, &ctx.m_InitReg.Rbx);
-            uc_reg_write(uc, UC_X86_REG_RCX, &ctx.m_InitReg.Rcx);
-            uc_reg_write(uc, UC_X86_REG_RDX, &ctx.m_InitReg.Rdx);
-            uc_reg_write(uc, UC_X86_REG_RSI, &ctx.m_InitReg.Rsi);
-            uc_reg_write(uc, UC_X86_REG_RDI, &ctx.m_InitReg.Rdi);
-            uc_reg_write(uc, UC_X86_REG_R8, &ctx.m_InitReg.R8);
-            uc_reg_write(uc, UC_X86_REG_R9, &ctx.m_InitReg.R9);
-            uc_reg_write(uc, UC_X86_REG_R10, &ctx.m_InitReg.R10);
-            uc_reg_write(uc, UC_X86_REG_R11, &ctx.m_InitReg.R11);
-            uc_reg_write(uc, UC_X86_REG_R12, &ctx.m_InitReg.R12);
-            uc_reg_write(uc, UC_X86_REG_R13, &ctx.m_InitReg.R13);
-            uc_reg_write(uc, UC_X86_REG_R14, &ctx.m_InitReg.R14);
-            uc_reg_write(uc, UC_X86_REG_R15, &ctx.m_InitReg.R15);
-            uc_reg_write(uc, UC_X86_REG_RBP, &ctx.m_InitReg.Rbp);
-            uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
+            ResetRegisters(uc, ctx);
 
             /*
 
@@ -3139,7 +3267,7 @@ int main(int argc, char** argv) {
 
             *outs << "Function: " << ctx.filename << "\n";
             while (1) {
-                err = uc_emu_start(uc, /*ctx.m_ExecuteFromRip*/ prologue_address, prologue_address + sizeof(prologue_bytes) - 1 /* ctx.m_ImageEnd */, 0, 0);
+                err = uc_emu_start(uc, /*ctx.m_ExecuteFromRip*/ prologue_address, prologue_address + prologue_size - 1 /* ctx.m_ImageEnd */, 0, 0);
 
                 if (ctx.m_LastException != STATUS_SUCCESS) {
                     auto except         = ctx.m_LastException;
@@ -3149,31 +3277,10 @@ int main(int argc, char** argv) {
                     break;
                 }
             }
-            uint64_t result_rsp = 0;
-            uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
-            *outs << "RSP: 0x" << std::hex << result_rsp << "\n"
-                  << std::dec;
-            auto ptr        = result_rsp;
-            uintptr_t value = 0xdeadbeef;
-            for (ptr = 0x4ffb8; ptr > 0x4ff50; ptr -= 8) {
-                ptrdiff_t i = ptr - result_rsp;
-                uc_mem_read(uc, ptr, &value, 8);
-                *outs << "uc_emu_start stack: " << std::hex << std::get<1>(tpl) << std::dec << " " << i << ": 0x" << std::hex << ptr << ": 0x" << std::hex << ctx.NormaliseBase(value) << std::dec << "\n";
-                if (i == 0) break;
-            }
-
-            fs::path read_path(ctx.m_SaveRead);
-            fs::path written_path(ctx.m_SaveWritten);
-
-            read_path /= read_path / "read";
-            written_path = written_path / "written";
-
-            bytes_written += ctx.m_Written.size();
-            bytes_read += ctx.m_Read.size();
-            WriteMemoryAccesses(ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
-            WriteMemoryAccesses(ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
-            *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
+            uintptr_t fn_address = std::get<1>(tpl);
+            SaveResult(uc, fn_address, ctx);
         }
+    }
 
     uc_hook_del(uc, trace);
     uc_hook_del(uc, trace2);
@@ -3183,107 +3290,9 @@ int main(int argc, char** argv) {
     uc_reg_read(uc, UC_X86_REG_RAX, &result_rax);
 
     if (ctx.m_Dump) {
-        virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
-        virtual_buffer_t RebuildSectionBuffer;
-        mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
-        auto m_normalise_base = [&](mem::pointer& ea) {
-            return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
-        };
-
-        uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
-
-        auto ntheader = RtlImageNtHeader(imagebuf.GetBuffer());
-
-        auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
-                                                     sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
-
-        auto SectionCount = ntheader->FileHeader.NumberOfSections;
-        for (USHORT i = 0; i < SectionCount; ++i) {
-            SectionHeader[i].PointerToRawData = SectionHeader[i].VirtualAddress;
-            SectionHeader[i].SizeOfRawData    = SectionHeader[i].Misc.VirtualSize;
-        }
-
-        {
-            DWORD SectionAlignment;
-
-            if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
-                auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
-                SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
-            } else {
-                SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
-            }
-
-            auto correct_size = ntheader->OptionalHeader.BaseOfCode;
-
-            for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
-                DWORD SectionSize = SectionHeader[i].Misc.VirtualSize;
-                SectionSize       = (DWORD)ALIGN_UP_MIN1(
-                    std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
-                    SectionAlignment);
-                *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
-                                     SectionHeader[i].Name,
-                                     SectionHeader[i].Misc.VirtualSize,
-                                     SectionSize,
-                                     SectionHeader[i].VirtualAddress,
-                                     correct_size,
-                                     SectionHeader[i].SizeOfRawData,
-                                     SectionHeader[i].PointerToRawData)
-                      << "\n";
-
-                correct_size += SectionSize;
-                if (ctx.m_RebuildSectionSizes) {
-                    SectionHeader[i].Misc.VirtualSize = SectionSize;
-                }
-            }
-
-            LOG("ImageBase: {:8x}", ntheader->OptionalHeader.ImageBase);
-            LOG("ImageSize: {:8x}", ntheader->OptionalHeader.SizeOfImage);
-            if (ntheader->OptionalHeader.SizeOfImage != correct_size && ctx.m_RebuildImageSize) {
-                ntheader->OptionalHeader.SizeOfImage = correct_size;
-                LOG("ImageSize changed to: {:8x}", correct_size);
-            }
-
-            if (ctx.m_DisableRebase) {
-                ntheader->OptionalHeader.DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
-            }
-        }
-
-        if (ctx.m_PatchRuntime) {
-            mem::scan(mem::pattern("01 b9 2f a9"), r)
-                .or_else([] { LOG("Couldn't patch launcher detection"); })
-                .and_then([&](auto m) {
-                    LOG("Patching launcher detection at {:#x}", m_normalise_base(m));
-                    m.sub(9).rip(4).put_bytes(mem::pattern("b8 01 00 00 00 c3"));
-                });
-
-            if (ctx.m_Calls.size() < 3)
-                LOG("Couldn't find second call to patch for runtime execution");
-            else {
-                auto& [call, target] = ctx.m_Calls[2];
-                LOG("Patching runtime tamper detection at offset {:#x}", call);
-                patch_nops((char*)imagebuf.at(call), 5);
-            }
-        }
-
-        // ctx.RebuildSection(imagebuf.GetBuffer(), (ULONG)(ctx.m_ImageEnd - ctx.m_ImageBase), RebuildSectionBuffer);
-
-        // ctx.m_ImageRealEntry = 0x140000000;
-        if (ctx.m_ImageRealEntry)
-            ntheader->OptionalHeader.AddressOfEntryPoint = (ULONG)(ctx.m_ImageRealEntry - ctx.m_ImageBase);
-
-        auto dumpfile = filename + ".upeed";
-
-        FILE* fp = fopen(dumpfile.c_str(), "wb");
-
-        fwrite(imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase, 1, fp);
-
-        //if (RebuildSectionBuffer.GetBuffer())
-        //    fwrite(RebuildSectionBuffer.GetBuffer(), RebuildSectionBuffer.GetLength(), 1, fp);
-
-        fclose(fp);
+        ImageDump(ctx, uc, filename);
     }
 
-    *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << std::endl;
     *outs << "uc_emu_start return: " << std::dec << err << std::endl;
     *outs << "entrypoint return: " << std::hex << result_rax << std::endl;
     *outs << "last rip: " << std::hex << ctx.m_LastRip;
@@ -3326,7 +3335,7 @@ To extract blobs from a dumped binary:
 
 To extract a non-dumped binary, in order of preference (i.e. until one of them works)
 ```
-/path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call --history --skip-4th-call --patch-anti-tamper
+/path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call --obfu --skip-4th-call --patch-anti-tamper
 /path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call
 /path/to/unicorn_pe.exe retail.exe --dump --bitmap
 ```
@@ -3338,6 +3347,12 @@ There are also some optional arguments that I haven't tested for a while, e.g.
 `--patch "0x14000100:66 90"` to apply patches before running
 
 
+Requirements:
+
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+bootstrap-vcpkg.bat
+vcpkg install argh:x64-windows-static boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static pystring:x64-windows-static ms-gsl:x64-windows-static
 
 
 

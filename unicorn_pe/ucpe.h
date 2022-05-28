@@ -100,7 +100,7 @@ public:
 		m_IsKernel = false;
 		m_IsWin64 = true;
 		m_IsPacked = false;
-		m_Unpack = false;
+		m_Dump = false;
 		m_HasCache = false;
 		m_Cache = false;
 		m_PebBase = 0;
@@ -267,11 +267,11 @@ public:
 	bool m_DisassembleForce = false;
 	bool m_IsPacked;
 	bool m_BoundCheck;
-	bool m_Unpack;
+	bool m_Dump;
 	bool m_Cache;
 	bool m_HasCache;
 	bool m_FindChecks;
-	bool m_Bitmap;
+	bool m_Unpack;
 	bool m_Obfu;
 	bool m_SkipSecondCall;
 	bool m_SkipFourthCall;;

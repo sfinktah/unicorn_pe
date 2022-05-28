@@ -49,7 +49,7 @@ using namespace nowide;
 //#include "../vendor/lodash/071_join.h"
 //#include "../vendor/lodash/001_each.h"
 //#include "../vendor/lodash/024_keys.h"
-#include "../vendor/lodash/026_slice.h"
+//#include "../vendor/lodash/026_slice.h"
 #include "../vendor/lodash/071_join.h"
 #include "../vendor/lodash/075_first.h"
 #include "../vendor/lodash/095_uniq.h"
@@ -1434,7 +1434,7 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
         }
         case UC_MEM_WRITE: {
             if (!ctx->m_SaveWritten.empty() || ctx->m_Sandbox) {
-                if (ctx->m_Bitmap && address >= ctx->m_ImageBase && address < ctx->m_ImageEnd) {
+                if (ctx->m_Unpack && address >= ctx->m_ImageBase && address < ctx->m_ImageEnd) {
                     address -= ctx->m_ImageBase;
                     while (size-- > 0) {
                         ctx->m_WrittenBitmap[address++] = true;
@@ -2189,7 +2189,7 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx) {
     read_path /= read_path / "read";
     written_path = written_path / "written";
 
-    if (ctx.m_Bitmap) {
+    if (ctx.m_Unpack) {
         WriteMemoryBitmapAccesses(uc, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
     } else {
         uint64_t bytes_written = 0;
@@ -2570,7 +2570,7 @@ int main(int argc, char** argv) {
     outs      = &std::cout;
 
     if (!cmdl(1)) {
-        printf("usage: unicorn_pe (filename) [--find] [--disasm] [--dump] [--bitmap] [--obfu] [--save-written=PATH] [--save-read=PATH]\n");
+        printf("usage: unicorn_pe (filename) [--decrypt | --unpack] [--disasm] [--save-dump] [--bitmap] [--obfu] [--save-written=PATH] [--save-read=PATH]\n");
         return 0;
     }
 
@@ -2606,11 +2606,11 @@ int main(int argc, char** argv) {
     bool bKernel              = true;
     ctx.m_IsKernel            = cmdl["k"];
     ctx.m_Disassemble         = cmdl["disasm"];
-    ctx.m_Bitmap              = cmdl["bitmap"];
-    ctx.m_IsPacked            = cmdl["packed"];
+    ctx.m_Unpack              = cmdl["unpack", "bitmap"];
+    ctx.m_IsPacked            = cmdl["packed"]; // some vmprotect stuff that was already here
     ctx.m_BoundCheck          = cmdl["boundcheck"];
-    ctx.m_Unpack              = cmdl["unpack"];
-    ctx.m_FindChecks          = cmdl["find"];
+    ctx.m_Dump                = cmdl["save-dump", "dump"];
+    ctx.m_FindChecks          = cmdl["decrypt", "find"];
     ctx.m_SkipSecondCall      = cmdl["skip-second-call"];
     ctx.m_SkipFourthCall      = cmdl["skip-4th-call"];
     ctx.m_Obfu                = cmdl["obfu"];
@@ -3271,7 +3271,7 @@ int main(int argc, char** argv) {
         ResetRegisters(uc, ctx);
 
         *outs << "Function: " << ctx.filename << "\n";
-        if (ctx.m_Bitmap) {
+        if (ctx.m_Unpack) {
             ctx.m_WrittenBitmap.resize(ctx.m_ImageEnd - ctx.m_ImageBase);
         }
         while (1) {
@@ -3370,7 +3370,7 @@ int main(int argc, char** argv) {
     uint64_t result_rax = 0;
     uc_reg_read(uc, UC_X86_REG_RAX, &result_rax);
 
-    if (ctx.m_Unpack) {
+    if (ctx.m_Dump) {
         ImageDump(ctx, uc, filename);
     }
 
@@ -3412,7 +3412,7 @@ int main(int argc, char** argv) {
 https://github.com/sfinktah/unicorn_pe  -- there's a built copy in x64/releases, and to build it yourself you will need `vcpkg install boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static` or something to that effect.  The other things are included (capstone, blackbone, unicorn).
 
 To extract blobs from a dumped binary:
-`/path/to/unicorn_pe.exe dumped.exe --find --save-written=test1` where test1 is a folder that exists (or it will be made for you) underneath where-ever you keep you .i64 file 
+`/path/to/unicorn_pe.exe dumped.exe --decrypt --save-written=test1` where test1 is a folder that exists (or it will be made for you) underneath where-ever you keep you .i64 file 
 
 To extract a non-dumped binary, in order of preference (i.e. until one of them works)
 ```

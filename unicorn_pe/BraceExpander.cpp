@@ -159,7 +159,7 @@ namespace sfinktah::string::brace_expander {
 
             auto push = [&](auto i) {
                 if (isAlphaSequence) {
-                    N.push_back(chr(i));
+                    N.push_back(chr((int)i));
                 } else if (isHexSequence) {
                     std::string outstr(HexString(i));  // i = String(i);
                     if (pad) {

@@ -1,7 +1,7 @@
+#ifdef USE_BOOST
 #include <windows.h>
 #include <boost/config.hpp>
 #include <boost/circular_buffer.hpp>
-//#include <boost/regex.hpp>
 #include <boost/xpressive/xpressive.hpp>
 namespace bre = boost::xpressive;
 #include <pystring/pystring.h>
@@ -303,7 +303,7 @@ bool multimatch(const boost::circular_buffer<FuncTailInsn>& container, const std
         std::swap(insn_list, _insn_list);
         return true;
     }
-	//LOG("[-----] pattern_end:{} {}, pattern_count:{}/{}, line:{}/{}", pattern_end, pattern_peek_end, pattern_count, pattern_list_size, i, csize);
+    //LOG("[-----] pattern_end:{} {}, pattern_count:{}/{}, line:{}/{}", pattern_end, pattern_peek_end, pattern_count, pattern_list_size, i, csize);
 
     // *outs << fmt::format("[multimatch] shouldn't reach this point???\n");
     //if (multi && repetitions[pattern_count].size() >= min) {
@@ -348,4 +348,5 @@ bool multimatch(const boost::circular_buffer<FuncTailInsn>& container, const std
 								asmjit::host::r14, asmjit::host::r15 };
 							auto jmpToHook  = AsmFactory::GetAssembler(AsmFactory::asm64);
 							//(*jmpToHook)->jmp( (asmjit::Ptr)&HookHandler<Fn, C>::Handler );
+#endif
 #endif

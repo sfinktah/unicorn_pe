@@ -4,8 +4,7 @@
 #include <sstream>
 
 namespace sfinktah::string::brace_expander {
-    using vector_string = ::std::vector<std::string>;
-    vector_string expand(const std::string& str);
+    std::vector<std::string> expand(const std::string& str);
 
     template <typename T>
     std::string join(const T& elements, std::string separator = ",") {

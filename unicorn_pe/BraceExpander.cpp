@@ -6,9 +6,6 @@
 #include <fmt/format.h>
 #include "../vendor/lodash/014_filter.h"
 
-using vector_string = std::vector<std::string>;
-using cref_string   = const std::string&;
-
 namespace sfinktah::string::brace_expander {
 
     struct m_t {
@@ -52,8 +49,8 @@ namespace sfinktah::string::brace_expander {
         return oss.str();
     }
 
-    auto concatMap(vector_string xs, std::function<vector_string(std::string)> fn) {
-        vector_string res;
+    auto concatMap(std::vector<std::string> xs, std::function<std::vector<std::string>(std::string)> fn) {
+        std::vector<std::string> res;
         for (auto elem : xs)
             for (auto elem : fn(elem))
                 res.push_back(elem);
@@ -87,8 +84,8 @@ namespace sfinktah::string::brace_expander {
         return {};
     };
 
-    vector_string expand(const std::string& str) {
-        vector_string expansions;
+    std::vector<std::string> expand(const std::string& str) {
+        std::vector<std::string> expansions;
 
         m_t m    = {};
         auto val = isBalanced('{', '}', str);
@@ -109,12 +106,12 @@ namespace sfinktah::string::brace_expander {
 
         auto pre = m.pre.length()
                        ? expand(m.pre)
-                       : vector_string{""};
+                       : std::vector<std::string>{""};
         auto post = m.post.length()
                         ? expand(m.post)
-                        : vector_string{""};
+                        : std::vector<std::string>{""};
 
-        vector_string n;
+        std::vector<std::string> n;
         auto balance    = 0;
         std::string buf = "";
         auto separator  = isSequence
@@ -140,7 +137,7 @@ namespace sfinktah::string::brace_expander {
         }
         n = concatMap(n, expand);
 
-        vector_string N;
+        std::vector<std::string> N;
 
         if (!isSequence) {
             N = n;
@@ -152,7 +149,7 @@ namespace sfinktah::string::brace_expander {
                             ? std::abs(numeric(n[2]))
                             : 1;
             auto reverse = y < x;
-            auto pad     = _::filter<vector_string>(n, [](const auto& el) {
+            auto pad     = _::filter<std::vector<std::string>>(n, [](const auto& el) {
                            std::smatch match;
                            return std::regex_search(el, match, std::regex(R"(^-?0\d)"));
                        })
@@ -189,7 +186,7 @@ namespace sfinktah::string::brace_expander {
         for (auto i = 0; i < pre.size(); i++) {
             for (auto j = 0; j < N.size(); j++) {
                 for (auto k = 0; k < post.size(); k++) {
-                    expansions.push_back(join(vector_string{pre[i], N[j], post[k]}, ""));
+                    expansions.push_back(join(std::vector<std::string>{pre[i], N[j], post[k]}, ""));
                 }
             }
         }

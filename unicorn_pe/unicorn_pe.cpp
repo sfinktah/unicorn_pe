@@ -12,9 +12,13 @@
 #include <intrin.h>
 #include <regex>
 #include <deque>
+#include <map>
+#include <utility>
 
+#ifdef USE_BOOST
 #include <boost/config.hpp>
 #include <boost/circular_buffer.hpp>
+#endif
 
 #include <fmt/format.h>
 #include <pystring/pystring.h>
@@ -61,6 +65,9 @@ std::forward_list<PATCH_ENTRY> membricksafe::g_patches;
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "Wldap32.Lib")
 #pragma comment(lib, "Crypt32.Lib")
+#pragma comment(lib, "fmt.lib")
+#pragma comment(lib, "pystring.lib")
+
 std::ostream* outs;
 
 #define LOG_ADDR_N(X) *outs << #X << ": " << std::hex << normalise_base(X.as<uintptr_t>()) << std::dec << std::endl
@@ -701,8 +708,10 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
     }
 }
 
+#ifdef USE_BOOST
 // CircularBuffer<FuncTailInsn, 128> history;
 static boost::circular_buffer<FuncTailInsn> history(16);
+#endif
 
 void advance_rip(uc_engine* uc, int offset) {
     uintptr_t rip;
@@ -903,6 +912,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     }
                     cs_free(insn, count);
                 }
+#ifdef USE_BOOST
                 if (ctx->m_Obfu) {
                     static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
                     if (!pystring::startswith(insn[ii].mnemonic, "nop")) {
@@ -1207,14 +1217,15 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         }
                     }
                 }
-                //quick_test_matched: mov qword ptr \[rsp-8\], (?:\br(?:(?:[a-d])x|(?:[sb])p|(?:[sd])i)\b);lea rsp, \[rsp-8\]
-                //quick_test_matched: movupd xmmword ptr [rsp+0xb0], xmm12;movupd xmmword ptr [rsp+0xc0], xmm5;movupd xmmword ptr [rsp+0xd0], xmm8;movupd xmmword ptr [rsp+0xe0], xmm6;movupd xmmword ptr [rsp+0xf0], xmm15;push 0x10;test rsp, 0xf;jne 0x14449297d;sub rsp, 8;jmp 0x14394803d;push rbp;lea rbp, [rel 0x1433eab1e];xchg qword ptr [rsp], rbp;jmp 0x142fd556b;mov qword ptr [rsp-8], rbp;lea rsp, [rsp-8]
+#endif
             }
         } else {
             if (was_disassembling) {
                 was_disassembling = false;
                 LOG_DEBUG("............repeated instructions skipped");
+#if USE_BOOST
                 history.clear();
+#endif
             }
         }
     }
@@ -1378,7 +1389,7 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
 
     switch (type) {
         case UC_MEM_READ: {
-            if (!ctx->m_SaveRead.empty() || ctx->m_Sandbox) {
+            if (!ctx->m_SaveRead.empty() || ctx->m_Dwords) {
                 if (address > 0x50000) {
                     switch (size) {
                         case 1:
@@ -1466,7 +1477,7 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
                                     *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
                         }
                     }
-                    if (!ctx->m_SaveWritten.empty()) {
+                    if (!ctx->m_SaveWritten.empty() || ctx->m_Dwords) {
                         switch (size) {
                             case 1:
                                 ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)value);
@@ -1959,8 +1970,28 @@ void WriteMemoryAccesses(std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const
 
             last_address = address;
         }
-        vec.clear();
     }
+}
+
+template <typename KeyType, typename LeftValue, typename RightValue>
+std::map<KeyType, std::pair<LeftValue, RightValue>>
+IntersectMapKeys(const std::map<KeyType, LeftValue>& left,
+                 const std::map<KeyType, RightValue>& right) {
+    std::map<KeyType, std::pair<LeftValue, RightValue>> result;
+    typename std::map<KeyType, LeftValue>::const_iterator il  = left.begin();
+    typename std::map<KeyType, RightValue>::const_iterator ir = right.begin();
+    while (il != left.end() && ir != right.end()) {
+        if (il->first < ir->first)
+            ++il;
+        else if (ir->first < il->first)
+            ++ir;
+        else {
+            result.insert(std::make_pair(il->first, std::make_pair(il->second, ir->second)));
+            ++il;
+            ++ir;
+        }
+    }
+    return result;
 }
 
 void RestoreWrittenMemory(uc_engine* uc, std::vector<std::tuple<uintptr_t, uint8_t>>& vec) {
@@ -1995,8 +2026,44 @@ void RestoreWrittenMemory(uc_engine* uc, std::vector<std::tuple<uintptr_t, uint8
 
             last_address = address;
         }
-        vec.clear();
     }
+}
+
+std::map<uintptr_t, std::vector<uint8_t>> WrittenMemoryAsMap(std::vector<std::tuple<uintptr_t, uint8_t>>& vec) {
+    std::map<uintptr_t, std::vector<uint8_t>> result;
+    if (vec.size()) {
+        std::sort(vec.begin(), vec.end(), [](const auto& lhs, const auto& rhs) { return std::get<0>(lhs) < std::get<0>(rhs); });
+        auto last = std::unique(vec.begin(), vec.end(), [](const auto& lhs, const auto& rhs) { return std::get<0>(lhs) == std::get<0>(rhs); });
+        vec.erase(last, vec.end());
+        auto len_read                 = vec.size();
+        uintptr_t last_address        = 0;
+        uintptr_t range_start_address = 0;
+        uintptr_t range_start_index   = 0;
+        std::vector<uint8_t> to_write;
+        for (size_t i = 0; i < len_read; ++i) {
+            auto [address, data] = vec[i];
+            if (!last_address || last_address + 1 == address) {
+                if (!last_address) {
+                    range_start_index   = i;
+                    range_start_address = address;
+                }
+                to_write.emplace_back(data);
+            } else if (last_address + 1 > address) {
+                *outs << "error (unsorted or non-unique list): last_address: " << std::hex << last_address << " address: " << address << "\n";
+            } else {
+                if (i > range_start_index && !to_write.empty()) {
+                    result.insert({range_start_address, to_write});
+                }
+                to_write.clear();
+                range_start_address = address;
+                range_start_index   = i;
+                to_write.emplace_back(data);
+            }
+
+            last_address = address;
+        }
+    }
+    return result;
 }
 
 uc_err patch_nops(uc_engine* uc, uint64_t address, size_t count) {
@@ -2102,7 +2169,7 @@ void ResetRegisters(uc_engine* uc, PeEmulation& ctx) {
     uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
 }
 
-void SaveResult(uc_engine* uc, const uintptr_t& fn_address, PeEmulation& ctx) {
+void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx) {
     uint64_t result_rsp = 0;
     uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
     *outs << "RSP: 0x" << std::hex << result_rsp << "\n"
@@ -2113,7 +2180,7 @@ void SaveResult(uc_engine* uc, const uintptr_t& fn_address, PeEmulation& ctx) {
         ptrdiff_t i = ptr - result_rsp;
         uc_mem_read(uc, ptr, &value, 8);
         *outs << "uc_emu_start stack: " << std::hex << fn_address << std::dec << " " << i << ": 0x" << std::hex << ptr << ": 0x" << std::hex << ctx.NormaliseBase(value) << std::dec << "\n";
-        if (i == 0) break;
+        if (i == -0x20) break;
     }
 
     fs::path read_path(ctx.m_SaveRead);
@@ -2130,13 +2197,25 @@ void SaveResult(uc_engine* uc, const uintptr_t& fn_address, PeEmulation& ctx) {
 
         bytes_written += ctx.m_Written.size();
         bytes_read += ctx.m_Read.size();
-        WriteMemoryAccesses(ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
-        WriteMemoryAccesses(ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
-        if (ctx.m_Sandbox) {
-            RestoreWrittenMemory(ctx.m_uc, ctx.m_Undo);
-        }
+        if (!ctx.m_SaveRead.empty())
+            WriteMemoryAccesses(ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
+        if (!ctx.m_SaveWritten.empty())
+            WriteMemoryAccesses(ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
         *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
     }
+    if (ctx.m_Dwords) {
+        auto intersection = IntersectMapKeys(WrittenMemoryAsMap(ctx.m_Read), WrittenMemoryAsMap(ctx.m_Written));
+        for (const auto& [address, bytepair] : intersection) {
+            LOG("Intersection: {:x} {} = {}", address, HexDump::asString(bytepair.first), HexDump::asString(bytepair.second));
+        }
+    }
+    if (ctx.m_Sandbox) {
+        RestoreWrittenMemory(ctx.m_uc, ctx.m_Undo);
+    }
+
+    ctx.m_Read.clear();
+    ctx.m_Written.clear();
+    ctx.m_Undo.clear();
 }
 
 std::vector<mem::pointer> scan_all_with_iteratee(mem::region r, mem::pattern p, std::function<uintptr_t(uintptr_t)> iter) {
@@ -2155,7 +2234,7 @@ size_t scan_all_do(mem::region r, mem::pattern p, std::function<void(uintptr_t)>
         ++counter;
     }
     LOG("scan_all_do found {} matches for {}", counter, p.to_string());
-	return counter;
+    return counter;
 }
 
 std::string megalookup(uintptr_t addr) {
@@ -2530,7 +2609,7 @@ int main(int argc, char** argv) {
     ctx.m_Bitmap              = cmdl["bitmap"];
     ctx.m_IsPacked            = cmdl["packed"];
     ctx.m_BoundCheck          = cmdl["boundcheck"];
-    ctx.m_Dump                = cmdl["dump"];
+    ctx.m_Unpack              = cmdl["unpack"];
     ctx.m_FindChecks          = cmdl["find"];
     ctx.m_SkipSecondCall      = cmdl["skip-second-call"];
     ctx.m_SkipFourthCall      = cmdl["skip-4th-call"];
@@ -2539,6 +2618,8 @@ int main(int argc, char** argv) {
     ctx.m_RebuildImageSize    = cmdl["rebuild-size"];
     ctx.m_RebuildSectionSizes = cmdl["rebuild-sections"];
     ctx.m_DisableRebase       = cmdl["no-aslr"];
+    ctx.m_Dwords              = cmdl["dwords"];
+    ctx.m_Sandbox             = !cmdl["no-sandbox"];
     if (cmdl("save-written") >> ctx.m_SaveWritten) {
         if (!fs::is_directory(ctx.m_SaveWritten) && !fs::create_directory(ctx.m_SaveWritten)) {
             *outs << "Not a directory: " << ctx.m_SaveWritten << "\n";
@@ -2891,29 +2972,29 @@ int main(int argc, char** argv) {
                     if (rr.contains(rel)) {
                         ea += 0x12;
                         if (!m_skip_jmps(ea))
-                            return LOG("FASTFAIL1: {:x}", m_normalise_base(ea)), 0;
+                            return LOG_NOOP("FASTFAIL1: {:x}", m_normalise_base(ea)), 0;
                         if ((ea.as<uint32_t&>() & 0x00ffffff) != 0x00458948)  // 'mov [rbp+0x18], rax'
-                            return LOG("FASTFAIL2: {:x}", m_normalise_base(ea)), 0;
+                            return LOG_NOOP("FASTFAIL2: {:x}", m_normalise_base(ea)), 0;
                         ea += 4;
                         if (!m_skip_jmps(ea))
-                            return LOG("FASTFAIL3: {:x}", m_normalise_base(ea)), 0;
+                            return LOG_NOOP("FASTFAIL3: {:x}", m_normalise_base(ea)), 0;
                         if ((ea.as<uint32_t&>() & 0x00ffffff) != 0x00058b48)  // 'mov rax, [rel off_146C028B2]'
-                            return LOG("FASTFAIL4: {:x}", m_normalise_base(ea)), 0;
+                            return LOG_NOOP("FASTFAIL4: {:x}", m_normalise_base(ea)), 0;
                         abso_ptr = ea.add(3).rip(4);
                         if (r.contains(abso_ptr)) {
                             const auto abso = abso_ptr.as<uintptr_t&>();
                             if (rel == abso) {
-                                return LOG("ITER11: {:x}", m_normalise_base(ea)), abso;
+                                return LOG_NOOP("ITER11: {:x}", m_normalise_base(ea)), abso;
                             }
-                            return LOG("SLOWFAIL2: {:x}", m_normalise_base(ea)), 0;
+                            return LOG_NOOP("SLOWFAIL2: {:x}", m_normalise_base(ea)), 0;
                         }
-                        return LOG("SLOWFAIL3: {:x}", m_normalise_base(ea)), 0;
+                        return LOG_NOOP("SLOWFAIL3: {:x}", m_normalise_base(ea)), 0;
                     }
-                    return LOG("SLOWFAIL4: {:x}", m_normalise_base(ea)), 0;
+                    return LOG_NOOP("SLOWFAIL4: {:x}", m_normalise_base(ea)), 0;
                 }
-                return LOG("SLOWFAIL5: {:x}", m_normalise_base(ea)), 0;
+                return LOG_NOOP("SLOWFAIL5: {:x}", m_normalise_base(ea)), 0;
             }
-            return LOG("SLOWFAIL1: {:x}", m_normalise_base(ea)), 0;
+            return LOG_NOOP("SLOWFAIL1: {:x}", m_normalise_base(ea)), 0;
         };
 
         // return [e for e in FindInSegments(pattern, '.text', None, predicate_checksummers)]
@@ -3289,7 +3370,7 @@ int main(int argc, char** argv) {
     uint64_t result_rax = 0;
     uc_reg_read(uc, UC_X86_REG_RAX, &result_rax);
 
-    if (ctx.m_Dump) {
+    if (ctx.m_Unpack) {
         ImageDump(ctx, uc, filename);
     }
 
@@ -3352,7 +3433,7 @@ Requirements:
 git clone https://github.com/Microsoft/vcpkg.git
 cd vcpkg
 bootstrap-vcpkg.bat
-vcpkg install argh:x64-windows-static boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static pystring:x64-windows-static ms-gsl:x64-windows-static
+vcpkg install boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static pystring:x64-windows-static ms-gsl:x64-windows-static
 
 
 

@@ -386,6 +386,7 @@ int preg_match_all(std::string pattern, std::string subject, std::vector<std::st
     return count;
 }
 
+#ifdef USE_BOOST
 #include <boost/config.hpp>
 //#include <boost/regex.hpp>
 #include <boost/xpressive/xpressive.hpp>
@@ -400,6 +401,7 @@ int sregex_match(const std::string& pattern, const std::string& subject, std::ve
     }
     return m;
 }
+#endif
 
 // int preg_match ( string $pattern , string $subject [, array &$matches [, int $flags = 0 [, int $offset = 0 ]]] )
 int preg_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches, int flags,
@@ -567,15 +569,15 @@ fs::path spread_filename(fs::path path) {
     //auto dn = os::path::dirname(path.string());
     //auto bn = os::path::basename(path.string());
     //std::vector<std::string> subdirs;
-	auto dstpath = dn;
-    auto hash = joaat(bn.string().c_str(), 0);
+    auto dstpath = dn;
+    auto hash    = joaat(bn.string().c_str(), 0);
     for (int i = 0; i < 2; ++i) {
         uint32_t part = hash & (64 - 1);
         hash >>= 6;
         dstpath = dstpath / fmt::format("{:02}", part);
         //subdirs.emplace_back(fmt::format("{:02}", part));
     }
-	return dstpath / bn;
+    return dstpath / bn;
     //auto dstpath = os::path::join(dn, os::path::join(subdirs));
     //return os::path::join(dstpath, bn);
 }

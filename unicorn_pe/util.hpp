@@ -214,7 +214,9 @@ std::vector<std::string> preg_split_inverse(const std::string& input, const std:
 
 #define PREG_MATCH_IGNORE_CASE (1 << 0)
 int preg_match_all(std::string pattern, std::string subject, std::vector<std::string>& matches, int flags = 0, int offset = 0);
+#ifdef USE_BOOST
 int sregex_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches = nullptr, int flags = 0);
+#endif
 int preg_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches = nullptr, int flags = 0, int offset = 0);
 bool regex_match(const std::string& pattern, const std::string& subject, bool ignoreCase = 0);
 
@@ -284,13 +286,13 @@ R parseInt(const std::basic_string<CharT>& str, int base, R defaultValue = 0) {
         if (pos != str.length()) {
             LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}'", pos, str.length(), str);
             LOG_DEBUG(__FUNCTION__ ":     unprocessed string here -----{}^", pystring::mul("-", (int)pos));
-            return rv; // defaultValue;
+            return rv;  // defaultValue;
         }
         return rv;
     } catch (std::invalid_argument) {
-            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
-            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
     return defaultValue;
 }
@@ -301,15 +303,15 @@ R parseUint(const T& str, int base, R defaultValue = 0) {
     try {
         auto rv = std::stoull(str, &pos, base);
         if (pos != str.length()) {
-			LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}' (base {})", pos, str.length(), str, base);
+            LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}' (base {})", pos, str.length(), str, base);
             LOG_DEBUG(__FUNCTION__ ":     unprocessed partial string --{}^", pystring::mul("-", (int)pos));
-            return rv; // defaultValue;
+            return rv;  // defaultValue;
         }
         return rv;
     } catch (std::invalid_argument) {
-            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
-            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
     return defaultValue;
 }
@@ -322,13 +324,13 @@ std::optional<R> parseUintOpt(const T& str, int base) {
         if (pos == str.length()) {
             return rv;
         }
-		LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}' (base {})", pos, str.length(), str, base);
-		LOG_DEBUG(__FUNCTION__ ":     unprocessed partial string --{}^", pystring::mul("-", (int)pos));
-		if ("ALLOW_PARTIAL") return rv;
+        LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}' (base {})", pos, str.length(), str, base);
+        LOG_DEBUG(__FUNCTION__ ":     unprocessed partial string --{}^", pystring::mul("-", (int)pos));
+        if ("ALLOW_PARTIAL") return rv;
     } catch (std::invalid_argument) {
-            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
-            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
     return std::nullopt;
 }
@@ -341,13 +343,13 @@ std::optional<R> parseIntOpt(const T& str, int base) {
         if (pos == str.length()) {
             return rv;
         }
-		LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}'", pos, str.length(), str.c_str());
-		LOG_DEBUG(__FUNCTION__ ":     unprocessed string here -----{}^", pystring::mul("-", (int)pos));
-		return rv;
+        LOG_DEBUG(__FUNCTION__ ": pos != len ({:4}, {:4}) parsing '{}'", pos, str.length(), str.c_str());
+        LOG_DEBUG(__FUNCTION__ ":     unprocessed string here -----{}^", pystring::mul("-", (int)pos));
+        return rv;
     } catch (std::invalid_argument) {
-            LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": invalid argument: '{}' (base {})", str, base);
     } catch (std::out_of_range) {
-            LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
+        LOG_DEBUG(__FUNCTION__ ": out of range: '{}' (base {})", str, base);
     }
     return std::nullopt;
 }

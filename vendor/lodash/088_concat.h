@@ -73,4 +73,10 @@ namespace _ {
         // helper::add_to_container(destination, std::forward<Container::value_type>(item));
         helper::add_to_container(destination, std::move(item));
     }
+
+    template <typename LeftValue, typename RightValue>
+    void extend(std::vector<LeftValue>& destination, const std::vector<RightValue>& source)
+    {
+		destination.insert(std::end(destination), std::begin(source), std::end(source));
+    }
 }

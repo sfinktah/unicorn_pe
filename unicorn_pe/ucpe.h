@@ -100,7 +100,7 @@ public:
 		m_IsKernel = false;
 		m_IsWin64 = true;
 		m_IsPacked = false;
-		m_Dump = false;
+		m_Unpack = false;
 		m_HasCache = false;
 		m_Cache = false;
 		m_PebBase = 0;
@@ -267,7 +267,7 @@ public:
 	bool m_DisassembleForce = false;
 	bool m_IsPacked;
 	bool m_BoundCheck;
-	bool m_Dump;
+	bool m_Unpack;
 	bool m_Cache;
 	bool m_HasCache;
 	bool m_FindChecks;
@@ -280,6 +280,7 @@ public:
 	bool m_RebuildSectionSizes = false;
 	bool m_DisableRebase = false;
 	bool m_Sandbox = false;
+	bool m_Dwords = false;
 
 	uint64_t m_KSharedUserDataBase;
 	uint64_t m_KSharedUserDataEnd;
@@ -349,7 +350,7 @@ void* uc_memset(uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size);
 
 void ResetRegisters(uc_engine* uc, PeEmulation& ctx);
 
-void SaveResult(uc_engine* uc, const uintptr_t& fn_address, PeEmulation& ctx);
+void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx);
 
 int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename);
 

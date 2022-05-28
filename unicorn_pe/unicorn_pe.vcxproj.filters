@@ -57,6 +57,9 @@
     <ClCompile Include="BraceExpander.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="WhitespaceTokeniser.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nativestructs.h">
@@ -99,6 +102,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="BraceExpander.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="WhitespaceTokeniser.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

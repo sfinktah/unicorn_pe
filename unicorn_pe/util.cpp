@@ -563,6 +563,46 @@ size_t file_put_contents(const std::string& filename, const char* start, size_t 
     return 0;
 }
 
+// throws std::ifstream::failure
+std::string file_get_contents(cref_string filename) {
+    std::ifstream file;
+    std::string contents;
+    file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    try {
+        file.open(filename, std::ios::in | std::ios::binary);
+        // http://insanecoding.blogspot.com.au/2011/11/how-to-read-in-file-in-c.html
+        file.seekg(0, std::ios::end);
+        contents.resize(file.tellg());
+        file.seekg(0, std::ios::beg);
+        file.read(&contents[0], contents.size());
+        file.close();
+        return (contents);
+    } catch (std::exception& e) {
+        LOG_WARN("Exception reading file {}: {}", filename, e.what());
+        return contents;
+    }
+}
+
+std::vector<uint8_t> file_get_contents_bin(cref_string filename) {
+    std::ifstream file;
+    std::vector<uint8_t> contents;
+    file.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    try {
+        file.open(filename, std::ios::in | std::ios::binary);
+        // http://insanecoding.blogspot.com.au/2011/11/how-to-read-in-file-in-c.html
+        file.seekg(0, std::ios::end);
+        contents.resize(file.tellg());
+        file.seekg(0, std::ios::beg);
+        file.read((char*)contents.data(), contents.size());
+        file.close();
+        return (contents);
+    } catch (std::exception& e) {
+        LOG_WARN("Exception reading file {}: {}", filename, e.what());
+        return contents;
+    }
+}
+
+
 fs::path spread_filename(fs::path path) {
     auto dn = dirname(path);
     auto bn = basename(path);

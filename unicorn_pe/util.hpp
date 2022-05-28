@@ -420,6 +420,8 @@ public:
     DWORD size() const { return m_size; }
 };
 
+std::string file_get_contents(cref_string filename);
+std::vector<uint8_t> file_get_contents_bin(cref_string filename);
 size_t file_put_contents(const std::string& filename, const char* start, size_t length, size_t member_size = 1);
 fs::path spread_filename(fs::path path);
 void make_spread_folders(fs::path path);

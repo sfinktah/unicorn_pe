@@ -1,4 +1,5 @@
-﻿#include <unicorn/unicorn.h>
+﻿#define NOMINMAX
+#include <unicorn/unicorn.h>
 #include <capstone/capstone.h>
 #include <BlackBone/Process/Process.h>
 #include <BlackBone/ManualMap/MMap.h>
@@ -21,6 +22,7 @@
 #endif
 
 #include <fmt/format.h>
+#include <fmt/printf.h>
 #include <pystring/pystring.h>
 #include "sniffing/nowide/convert.hpp"
 using namespace nowide;
@@ -53,9 +55,12 @@ using namespace nowide;
 #include "../vendor/lodash/071_join.h"
 #include "../vendor/lodash/075_first.h"
 #include "../vendor/lodash/095_uniq.h"
+#include "../vendor/lodash/121_times.h"
 #include "multimatch.h"
 #include "MegaFunc.h"
 #include "BraceExpander.h"
+#include "WhitespaceTokeniser.h"
+#include "FileUtils.h"
 
 using json = nlohmann::json;
 using namespace blackbone;
@@ -94,6 +99,7 @@ void* patch_nops(void* ptr, size_t count);
 uint64_t EmuReadReturnAddress(uc_engine* uc);
 bool EmuReadNullTermUnicodeString(uc_engine* uc, uint64_t address, std::wstring& str);
 bool EmuReadNullTermString(uc_engine* uc, uint64_t address, std::string& str);
+void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT);
 
 static ULONG ExtractEntryPointRva(PVOID ModuleBase) {
     return RtlImageNtHeader(ModuleBase)->OptionalHeader.AddressOfEntryPoint;
@@ -2607,7 +2613,7 @@ int main(int argc, char** argv) {
     ctx.m_IsKernel            = cmdl["k"];
     ctx.m_Disassemble         = cmdl["disasm"];
     ctx.m_Unpack              = cmdl["unpack", "bitmap"];
-    ctx.m_IsPacked            = cmdl["packed"]; // some vmprotect stuff that was already here
+    ctx.m_IsPacked            = cmdl["packed"];  // some vmprotect stuff that was already here
     ctx.m_BoundCheck          = cmdl["boundcheck"];
     ctx.m_Dump                = cmdl["save-dump", "dump"];
     ctx.m_FindChecks          = cmdl["decrypt", "find"];
@@ -2792,6 +2798,13 @@ int main(int argc, char** argv) {
             mbs(*addr).write_pattern(st_patch.c_str());
         } else
             LOG("patching: couldn't process {} as an address", st_addr);
+    }
+
+    for (auto& param : cmdl.params("mem")) {
+        auto st_purpose  = string_between("", ":", param.second);
+        auto st_commands = string_between(":", "", param.second);
+		uintptr_t result;
+        mem_parser(ctx, st_commands, result);
     }
 
     {
@@ -3408,19 +3421,247 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+template <typename... Args>
+std::string lnva(const char* format, const Args&... args) {
+    std::string text;
+    try {
+        0 && printf(format, args...);
+        *outs << fmt::sprintf(format, args...);
+    } catch (fmt::format_error& e) {
+        LOG_DEBUG(__FUNCTION__ "::format(\"%s\"): %s", format, e.what());
+    }
+    return text;
+};
+
+void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT) {
+    // to be written-ish
+    std::deque<mem::pointer> stack;
+    auto unnormalise_base = [&](uintptr_t n) -> uintptr_t { return n; };
+    auto normalise_base   = [&](uintptr_t n) -> uintptr_t { return n; };
+    auto safe_dereference = [&](uintptr_t) -> bool { return true; };
+    auto push             = [&](mem::pointer p) -> void { stack.emplace_back(p); };
+    auto pop              = [&]() -> mem::pointer { auto r = stack.back(); stack.pop_back(); return r; };
+    // end to be written
+
+    auto parser = pogo::WhitespaceTokeniser("dummy line");
+    try {
+        parser = pogo::WhitespaceTokeniser(_line);
+    } catch (std::runtime_error& ex) {
+        LOG("Exception parsing string: {}", ex.what());
+        return;
+    }
+
+    if (parser.empty()) return;
+    auto _command = parser.current;
+    if (parser.size() - 1 < 1) {
+        lnva(R"(
+[ alloc <size> | push | pop | from_file <filename> | write <size_type> <value> | 
+  pop_write <size_type> | loop <times> '<commands>' | deref | [rip|add|sub|offset] <offset> | 
+  as <size_type> ]
+size_type ::= [u|]int[[8|16|32|64|ptr]_t]
+)");
+        return;
+    }
+
+    bool isPattern = false;
+
+    mem::pointer ptr;
+    std::string _subject = parser.next;
+    if (isPattern) {
+        mem::pattern p(_subject.c_str());
+        mem::default_scanner s(p);
+        mem::module m = mem::module::main();
+        ptr           = s.scan(m);
+    } else {
+        if (auto pointer = asQword(_subject)) {
+            ptr = mem::pointer(unnormalise_base(*pointer));
+        } else {
+            lnva("Pointer \"%s\" was rubbish", _subject.c_str());
+            return;
+        }
+    }
+    if (isPattern && !ptr) {
+        lnva("Pattern \"%s\" was unmatched", _subject.c_str());
+        return;
+    }
+    auto address = normalise_base(ptr.as<uintptr_t>());
+    _RESULT      = ptr.as<uintptr_t>();
+    lnva("%s found at 0x%llx", _command.c_str(), address);
+
+    while (!parser.empty()) {
+        auto cmd = parser.next;
+        if (cmd == "alloc") {
+            if (!parser.empty()) {
+                if (auto _size = asQword(parser.next, 10)) {
+                    uintptr_t alloc = ctx.HeapAlloc((ULONG)*_size);
+                    ptr             = mem::pointer(alloc);
+                }
+            }
+        } else if (cmd == "from_file") {
+            if (!parser.empty()) {
+                auto _filename = parser.next;
+                if (!file_exists(_filename)) {
+                    LOG("File does not exist: '{}'", _filename);
+                    return;
+                }
+                std::vector<uint8_t> _contents = file_get_contents_bin(_filename);
+                if (!_contents.empty()) {
+                    ptr.put_bytes(_contents);
+                    ptr += _contents.size();
+                }
+            }
+        } else if (cmd == "push") {
+            push(ptr);
+        } else if (cmd == "pop") {
+            ptr = pop();
+        } else if (cmd == "as") {
+            if (!parser.empty()) {
+                auto _type = parser.next;
+
+                // allow for [u]int
+                if (pystring::endswith(_type, "int")) _type += "32_t";
+
+                vector_string matches;
+                // [u] int (64|ptr) _t
+                if (!preg_match(R"((u?)int((?:\d+|ptr)+)_t)", _type, &matches)) {
+                    lnva("Invalid type for \"as\" - \"%s\"", _type.c_str());
+                    return;
+                }
+                auto _unsigned = matches[1] == "u";
+                int_fast8_t _bits =
+                    matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
+
+                if (_unsigned)
+                    _RESULT = ptr.as<uint64_t&>() & ((1 << (64 - _bits)) - 1);
+                else
+                    _RESULT = ptr.as<int64_t&>() << (64 - _bits) >> (64 - _bits);
+                lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), _RESULT);
+                // return;
+            }
+        } else if (cmd == "goto") {
+			auto target = parser.next;
+            if (auto _target = asQword(target)) {
+                ptr = mem::pointer(unnormalise_base(*_target));
+            } else {
+				lnva("Couldn't parse address \"%s\"", target.c_str());
+            }
+        } else if (cmd == "pop_write") {
+            if (!parser.empty()) {
+                auto _type  = parser.next;
+                auto _value = pop().as<uintptr_t>();
+
+                if (!_value) {
+                    LOG("invalid value");
+                    return;
+                }
+
+                // allow for [u]int
+                if (pystring::endswith(_type, "int")) _type += "32_t";
+
+                vector_string matches;
+                // [u] int (64|ptr) _t
+                if (!preg_match(R"((u?)int((?:\d+|ptr)+)_t)", _type, &matches)) {
+                    lnva("Invalid type for \"as\" - \"%s\"", _type.c_str());
+                    return;
+                }
+                auto _unsigned = matches[1] == "u";
+                int_fast8_t _bits =
+                    matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
+
+                if (_unsigned) {
+                    // clang-format off
+					ptr.as<uint64_t&>() = (ptr.as<uint64_t&>() & ~((1 << (64 - _bits)) - 1)) | 
+													   (_value &  ((1 << (64 - _bits)) - 1));
+                    // clang-format on
+                    ptr += _bits / 8;
+                } else
+                    LOG("never really figured out how to do an signed write");
+                lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), _RESULT);
+            }
+        } else if (cmd == "write") {
+            if (!parser.empty()) {
+                auto _type  = parser.next;
+                auto _value = asQword(parser.next);
+
+                if (!_value) {
+                    LOG("invalid value");
+                    return;
+                }
+
+                // allow for [u]int
+                if (pystring::endswith(_type, "int")) _type += "32_t";
+
+                vector_string matches;
+                // [u] int (64|ptr) _t
+                if (!preg_match(R"((u?)int((?:\d+|ptr)+)_t)", _type, &matches)) {
+                    lnva("Invalid type for \"as\" - \"%s\"", _type.c_str());
+                    return;
+                }
+                auto _unsigned = matches[1] == "u";
+                int_fast8_t _bits =
+                    matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
+
+                // clang-format off
+			if (_unsigned) {
+				ptr.as<uint64_t&>() = (ptr.as<uint64_t&>() & ~((1 << (64 - _bits)) - 1)) | 
+												  (*_value &  ((1 << (64 - _bits)) - 1));
+				ptr += _bits / 8;
+			}
+			else
+				LOG("never really figured out how to do an signed write");
+                // clang-format on
+                lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), _RESULT);
+            }
+        } else if (cmd == "offset" || cmd == "sub" || cmd == "add" || cmd == "rip") {
+            if (!parser.empty()) {
+                if (auto optionalOffset = parseIntOpt(parser.next, 0)) {
+                    auto offset = *optionalOffset;
+                    if (cmd == "add" || cmd == "offset") {
+                        ptr = ptr.add(offset);
+                    } else if (cmd == "sub") {
+                        ptr = ptr.sub(offset);
+                    } else if (cmd == "rip") {
+                        ptr = ptr.rip(offset);
+                    }
+                    lnva("%-8s %-8lli 0x%llx", cmd.c_str(), offset, ptr.as<uintptr_t>());
+                }
+            }
+        } else if (cmd == "loop") {
+            if (auto _times = asQword(parser.next)) {
+                std::string subject = parser.next;
+                // trim off surrounding 's
+                auto tmp_parser = pogo::WhitespaceTokeniser(subject.substr(1, subject.size() - 2));
+                _::timesSimple(*_times, [&] {
+                    parser.insert(tmp_parser.slice(0));
+                });
+            }
+        } else if (cmd == "deref") {
+            if (!safe_dereference(ptr.as<uintptr_t>())) {
+                lnva("Exception dereferencing 0x%llu", ptr.as<uintptr_t>());
+                return;
+            }
+            ptr = ptr.deref();
+            lnva("%-8s          0x%llx", cmd.c_str(), ptr.as<uintptr_t>());
+        } else if (cmd == "store") {
+            _RESULT = ptr.as<uintptr_t>();
+            lnva("%-8s          0x%llx", cmd.c_str(), ptr.as<uintptr_t>());
+        }
+    }
+    // address = normalise_base(r.as<uintptr_t>());
+}
+
 /*
 https://github.com/sfinktah/unicorn_pe  -- there's a built copy in x64/releases, and to build it yourself you will need `vcpkg install boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static` or something to that effect.  The other things are included (capstone, blackbone, unicorn).
 
 To extract blobs from a dumped binary:
 `/path/to/unicorn_pe.exe dumped.exe --decrypt --save-written=test1` where test1 is a folder that exists (or it will be made for you) underneath where-ever you keep you .i64 file 
 
-To extract a non-dumped binary, in order of preference (i.e. until one of them works)
+To extract a non-dumped binary
 ```
-/path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call --obfu --skip-4th-call --patch-anti-tamper
-/path/to/unicorn_pe.exe retail.exe --disasm --dump --bitmap --skip-second-call
-/path/to/unicorn_pe.exe retail.exe --dump --bitmap
+/path/to/unicorn_pe.exe retail.exe --unpack 
 ```
-`--dump` mode can also take a `save-written=<unpack_folder>` argument to create individual blobs.
+
+`--unpack` mode can also take a `save-written=<unpack_folder>` argument to create individual blobs.
 
 There are also some optional arguments that I haven't tested for a while, e.g.
 
@@ -3428,7 +3669,7 @@ There are also some optional arguments that I haven't tested for a while, e.g.
 `--patch "0x14000100:66 90"` to apply patches before running
 
 
-Requirements:
+Requirements (no longer needed):
 
 git clone https://github.com/Microsoft/vcpkg.git
 cd vcpkg

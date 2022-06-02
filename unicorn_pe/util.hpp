@@ -48,10 +48,10 @@ using vector_cube_wstring    = std::vector<std::vector<std::wstring>>;
 using vector_pair_wstring    = std::vector<std::pair<std::wstring, std::wstring>>;
 using vector_vector_wstring  = std::vector<vector_wstring>;
 
-std::string GetModuleName(const HMODULE module);
+//std::string GetModuleName(const HMODULE module);
 fs::path GetModulePath(std::string name);
 
-inline std::pair<HMODULE, size_t> g_ProcessRange;
+//inline std::pair<HMODULE, size_t> g_ProcessRange;
 
 std::vector<std::string> split(const std::string& s, char delim);
 
@@ -392,33 +392,6 @@ std::optional<uint64_t> asQwordO(std::optional<std::string> optarg, int default_
 std::optional<uint64_t> asQword(const std::string& arg, int default_base = 0);
 std::optional<uint32_t> asDword(const std::string& arg, int default_base = 0);
 std::optional<bool> asBool(const std::string& arg);
-
-class executable_meta {
-private:
-    uintptr_t m_begin;
-    uintptr_t m_end;
-    DWORD m_size;
-
-public:
-    PIMAGE_DOS_HEADER dosHeader;
-    PIMAGE_NT_HEADERS ntHeader;
-    template <typename TReturn, typename TOffset>
-    TReturn* getRVA(TOffset rva) {
-        return (TReturn*)(m_begin + rva);
-    }
-
-    executable_meta(void* module) : m_begin((uintptr_t)module), m_end(0) {
-        dosHeader = getRVA<IMAGE_DOS_HEADER>(0);
-        ntHeader  = getRVA<IMAGE_NT_HEADERS>(dosHeader->e_lfanew);
-
-        m_end  = m_begin + ntHeader->OptionalHeader.SizeOfCode;
-        m_size = ntHeader->OptionalHeader.SizeOfImage;
-    }
-
-    uintptr_t base() const { return m_begin; }
-    uintptr_t end() const { return m_end; }
-    DWORD size() const { return m_size; }
-};
 
 std::string file_get_contents(cref_string filename);
 std::vector<uint8_t> file_get_contents_bin(cref_string filename);

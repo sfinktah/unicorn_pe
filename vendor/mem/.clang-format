@@ -23,7 +23,6 @@ BraceWrapping:
   SplitEmptyRecord: false
 
 BreakBeforeBinaryOperators: None
-BreakInheritanceList: BeforeComma
 ColumnLimit: 120
 ConstructorInitializerAllOnOneLineOrOnePerLine: false
 Cpp11BracedListStyle: true
@@ -33,5 +32,4 @@ IndentPPDirectives: AfterHash
 KeepEmptyLinesAtTheStartOfBlocks: false
 NamespaceIndentation: All
 SpaceAfterCStyleCast: true
-SpaceInEmptyBlock: false
 TabWidth: 4

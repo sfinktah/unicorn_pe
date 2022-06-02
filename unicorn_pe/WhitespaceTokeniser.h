@@ -283,7 +283,7 @@ namespace pogo {
     }
 
     inline void WhitespaceTokeniser::insert(vector_string subject) {
-        m_tokens.insert(m_tokens.begin() + m_position, subject.begin(), subject.end());
+        m_tokens.insert(m_tokens.begin() + (m_position + 1), subject.begin(), subject.end());
     }
 
     inline vector_string WhitespaceTokeniser::get_args() const {

@@ -194,9 +194,11 @@
     <ClCompile Include="Logger.cpp" />
     <ClCompile Include="MegaFunc.cpp" />
     <ClCompile Include="multimatch.cpp" />
+    <ClCompile Include="TemporaryFile.cpp" />
     <ClCompile Include="unicorn_pe.cpp" />
     <ClCompile Include="util.cpp" />
     <ClCompile Include="WhitespaceTokeniser.cpp" />
+    <ClCompile Include="YasmExt.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="BraceExpander.h" />
@@ -210,10 +212,12 @@
     <ClInclude Include="membricksafe.hpp" />
     <ClInclude Include="multimatch.h" />
     <ClInclude Include="nativestructs.h" />
+    <ClInclude Include="TemporaryFile.h" />
     <ClInclude Include="ucpe.h" />
     <ClInclude Include="util.hpp" />
     <ClInclude Include="WhitespaceTokeniser.h" />
     <ClInclude Include="xrange.h" />
+    <ClInclude Include="YasmExt.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

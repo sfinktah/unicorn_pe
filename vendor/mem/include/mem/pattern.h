@@ -71,7 +71,8 @@ namespace mem
         explicit operator bool() const noexcept;
 
         std::string to_string() const;
-		const byte* data() const noexcept;
+
+        const byte* data() const noexcept;
     };
 
     mem::pointer scan(const mem::pattern& pattern, mem::region range);

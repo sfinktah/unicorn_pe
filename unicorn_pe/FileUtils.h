@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 std::string GetLastErrorAsString();
 
 namespace fs = std::filesystem;
@@ -27,18 +28,21 @@ fs::path extension(const fs::path& path);
 std::string filepath(fspath path);
 std::string replace_filename(fspath, const fspath& filename);
 std::string pathCombine(const std::string& path, const std::string& more);
-std::wstring pathCombine(const std::wstring &path, const std::wstring &more);
+std::wstring pathCombine(const std::wstring& path, const std::wstring& more);
 std::string pathFold(const std::vector<std::string>& paths);
 std::string replace_extension(const std::string& path, const std::string& extension);
 
-
 bool file_exists(const std::string& path);
 bool file_exists(const std::wstring& path);
-bool file_remove(const std::string & path);
-bool file_remove(const std::wstring & path);
+bool file_remove(const std::string& path);
+bool file_remove(const std::wstring& path);
 bool is_dir(const std::string& path);
-bool is_dir(const std::wstring & path);
-bool is_relative(const std::string & path);
+bool is_dir(const std::wstring& path);
+bool is_relative(const std::string& path);
 
-bool ensure_dir(const std::string & path);
+bool ensure_dir(const std::string& path);
 
+std::string tmpname();
+std::string fulltmpname();
+std::string tmpdir();
+std::string GetOurExeFolder(const std::string& file);

@@ -265,12 +265,15 @@ public:
 	bool m_IsKernel;
 	bool m_Disassemble;
 	bool m_DisassembleForce = false;
+	bool m_RewriteRsp = false;
+	bool m_RewriteRspDone = false;
 	bool m_IsPacked;
 	bool m_BoundCheck;
 	bool m_Dump;
 	bool m_Cache;
 	bool m_HasCache;
 	bool m_FindChecks;
+	bool m_FindBalance;
 	bool m_Unpack;
 	bool m_Obfu;
 	bool m_SkipSecondCall;
@@ -289,6 +292,7 @@ public:
 	uint64_t m_ImageBase;
 	uint64_t m_ImageEnd;
 	uint64_t m_ImageEntry;
+	uint64_t m_BalanceEntry = 0;
 	uint64_t m_ImageRealEntry;
 	uint64_t m_HeapBase;
 	uint64_t m_HeapEnd;

@@ -324,13 +324,6 @@ namespace membricksafe {
 
         R call() const { return offset(1).rip(4); }
 
-        // template, or implement for multiple argument types
-        R call(const uintptr_t func) {
-            // surely not the best way to do it, but whatever
-            this->write<uint8_t>(0xe8);
-            this->offset(1).write<int>((int)(func - this->as<uintptr_t>()) - 5);
-            return this->offset(5);
-        }
         /*
 "70 cb", "JO rel8	D	Valid	Valid	Jump short if overflow (OF=1).",
 "71 cb", "JNO rel8	D	Valid	Valid	Jump short if not overflow (OF=0).",
@@ -448,6 +441,13 @@ namespace membricksafe {
         R jmp(const uintptr_t func) {
             this->write<uint8_t>(0xe9);
             this->offset(1).write<int>((int)(func - this->as<uintptr_t>() - 5));
+            return this->offset(5);
+        }
+
+        R call(const uintptr_t func) {
+            // surely not the best way to do it, but whatever
+            this->write<uint8_t>(0xe8);
+            this->offset(1).write<int>((int)(func - this->as<uintptr_t>()) - 5);
             return this->offset(5);
         }
 

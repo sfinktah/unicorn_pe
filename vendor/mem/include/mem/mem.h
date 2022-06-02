@@ -114,13 +114,8 @@ namespace mem
         typename std::enable_if<!std::is_reference<T>::value, typename std::add_lvalue_reference<T>::type>::type
         rcast() & noexcept;
 
-        template <typename Container>
-        constexpr pointer put_bytes(const Container& obj) const noexcept {
-            using value_t = typename Container::value_type;
-            constexpr auto size_e  = sizeof(value_t);
-            region(*this, size_e * obj.size()).copy(obj.data());
-            return *this;
-        }
+        template <typename T>
+        constexpr pointer put_bytes(const T& obj) const noexcept;
 
         template <typename Func>
         constexpr std::enable_if_t<std::is_void_v<std::invoke_result_t<Func>>, pointer> 
@@ -162,14 +157,14 @@ namespace mem
         constexpr std::enable_if_t<!std::is_void_v<std::invoke_result_t<Func, pointer, Args...>>, pointer> 
         invoke(Func&& func, Args&&... args) const
         {
-			return std::forward<Func>(func)(*this, (args...));
+                        return std::forward<Func>(func)(*this, (args...));
         }
 
         template <typename Func, typename... Args>
         constexpr std::enable_if_t<std::is_void_v<std::invoke_result_t<Func, pointer, Args...>>, pointer> 
         invoke(Func&& func, Args&&... args) const
         {
-			std::forward<Func>(func)(*this, (args...));
+                        std::forward<Func>(func)(*this, (args...));
             return *this;
         }
 
@@ -197,52 +192,52 @@ namespace mem
     class region
     {
     public:
-		// iterator class is parametrized by pointer type
-		template <typename PointerType, typename T = pointer>
-		class region_iterator {
-		public:
-			friend region;
+                // iterator class is parametrized by pointer type
+                template <typename PointerType, typename T = pointer>
+                class region_iterator {
+                public:
+                        friend region;
 
-			region_iterator& operator++() {
-				start += 1;
-				return *this;
-			}
+                        region_iterator& operator++() {
+                                start += 1;
+                                return *this;
+                        }
 
-			region_iterator operator++(int) {
-				start += 1;
-				return region_iterator(start - 1, end);
-			}
+                        region_iterator operator++(int) {
+                                start += 1;
+                                return region_iterator(start - 1, end);
+                        }
 
-			bool operator==(const region_iterator& other) const {
-				return (start == other.start && end == other.end) ||
-					(ended() && other.ended());
-			}
-			bool operator!=(const region_iterator& other) const {
-				return !(*this == other);
-			}
-			T operator*() const {
-				return start;
-			}
+                        bool operator==(const region_iterator& other) const {
+                                return (start == other.start && end == other.end) ||
+                                        (ended() && other.ended());
+                        }
+                        bool operator!=(const region_iterator& other) const {
+                                return !(*this == other);
+                        }
+                        T operator*() const {
+                                return start;
+                        }
 
-		private:
-			region_iterator(T end) : start(end), end(end) { }
-			region_iterator(T start, T end) : start(start), end(end) { }
-			bool ended() const {
-				return start >= end;
-			}
+                private:
+                        region_iterator(T end) : start(end), end(end) { }
+                        region_iterator(T start, T end) : start(start), end(end) { }
+                        bool ended() const {
+                                return start >= end;
+                        }
 
-			T start;
-			T end;
-		};
+                        T start;
+                        T end;
+                };
 
-		typedef region_iterator<pointer*> iterator;
-		typedef region_iterator<const pointer*> const_iterator;
+                typedef region_iterator<pointer*> iterator;
+                typedef region_iterator<const pointer*> const_iterator;
 
-		iterator                                       begin() { return iterator(start.as<std::uintptr_t>(), start.as<std::uintptr_t>() + size); }
-		iterator                                       end() { return iterator(start.as<std::uintptr_t>() + size); }
+                iterator                                       begin() { return iterator(start.as<std::uintptr_t>(), start.as<std::uintptr_t>() + size); }
+                iterator                                       end() { return iterator(start.as<std::uintptr_t>() + size); }
 
-		const_iterator                                 cbegin() { return const_iterator(start.as<std::uintptr_t>(), start.as<std::uintptr_t>() + size); }
-		const_iterator                                 cend() { return const_iterator(start.as<std::uintptr_t>() + size); }
+                const_iterator                                 cbegin() { return const_iterator(start.as<std::uintptr_t>(), start.as<std::uintptr_t>() + size); }
+                const_iterator                                 cend() { return const_iterator(start.as<std::uintptr_t>() + size); }
 
         pointer start {nullptr};
         std::size_t size {0};
@@ -267,7 +262,8 @@ namespace mem
 
         constexpr region sub_region(pointer address) const noexcept;
 
-        constexpr pointer adjust_base(pointer base, pointer address) const noexcept;
+        constexpr pointer adjust_base_to(pointer base, pointer address) const noexcept;
+        constexpr pointer adjust_base_from(pointer base, pointer address) const noexcept;
     };
 
     template <typename T>
@@ -499,6 +495,13 @@ namespace mem
 
     template <typename T>
     MEM_STRONG_INLINE
+    constexpr pointer pointer::put_bytes(const T& obj) const noexcept {
+        region(*this, sizeof(typename T::value_type) * obj.size()).copy(obj.data());
+        return *this;
+    }
+
+    template <typename T>
+    MEM_STRONG_INLINE
         typename std::enable_if<!std::is_reference<T>::value, typename std::add_lvalue_reference<T>::type>::type
         pointer::rcast() & noexcept
     {
@@ -586,9 +589,18 @@ namespace mem
         return region(address, size - static_cast<std::size_t>(address - start));
     }
 
-    MEM_STRONG_INLINE constexpr pointer region::adjust_base(pointer base, pointer address) const noexcept
+    MEM_STRONG_INLINE constexpr pointer region::adjust_base_to(pointer base, pointer address) const noexcept
     {
-         return address - start.as<uintptr_t>() + base.as<uintptr_t>();
+        if (address - start.as<uintptr_t>() > size)
+                        return address;
+        return address - start.as<uintptr_t>() + base.as<uintptr_t>();
+    }
+
+    MEM_STRONG_INLINE constexpr pointer region::adjust_base_from(pointer base, pointer address) const noexcept
+    {
+        if (address - base.as<uintptr_t>() > size)
+                        return address;
+         return address - base.as<uintptr_t>() + start.as<uintptr_t>();
     }
 
 

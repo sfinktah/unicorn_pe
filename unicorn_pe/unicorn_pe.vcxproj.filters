@@ -60,6 +60,12 @@
     <ClCompile Include="WhitespaceTokeniser.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="YasmExt.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="TemporaryFile.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nativestructs.h">
@@ -105,6 +111,12 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="WhitespaceTokeniser.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="YasmExt.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="TemporaryFile.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

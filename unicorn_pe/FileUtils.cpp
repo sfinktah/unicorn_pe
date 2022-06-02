@@ -259,3 +259,49 @@ bool ensure_dir(const std::string& path) {
     }
     return true;  // return true if directory already there (or can't be made)
 }
+
+std::string tmpdir() {
+    const char* dirname;
+    dirname = std::getenv("TMP");
+    if (!dirname) dirname = std::getenv("TMPDIR");
+    if (!dirname) dirname = std::getenv("TEMP");
+    if (!dirname) dirname = ".";
+
+    //LOG_DEBUG("Init: Temp directory = %s", dirname);
+
+    return dirname;
+}
+
+std::string tmpdir(cref_string filename) { return pathCombine(tmpdir(), filename); }
+/**
+ * \brief generate a temporary filename (minus the path)
+ * \param partial (usually start) of filename
+ * \return string
+ */
+std::string tmpname() {
+    char name2[L_tmpnam];
+    *name2 = 0;
+    return /*stem*/(std::tmpnam(name2));
+}
+
+std::string fulltmpname() {
+    char name2[L_tmpnam];
+    *name2 = 0;
+    return std::tmpnam(name2);
+}
+
+fs::path getModuleFileName(HMODULE hModule = nullptr) {
+    wchar_t fileName[MAX_PATH];
+    GetModuleFileNameW(hModule, fileName, MAX_PATH);
+    return fs::path(fileName);
+}
+
+fs::path GetRunningExecutableFolder() {
+    return dirname(getModuleFileName());
+}
+
+std::string GetOurExeFolder(cref_string file) {
+    return (GetRunningExecutableFolder() / file).string();
+}
+
+

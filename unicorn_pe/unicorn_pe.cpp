@@ -61,6 +61,7 @@ using namespace nowide;
 #include "BraceExpander.h"
 #include "WhitespaceTokeniser.h"
 #include "FileUtils.h"
+#include "YasmExt.h"
 
 using json = nlohmann::json;
 using namespace blackbone;
@@ -99,7 +100,7 @@ void* patch_nops(void* ptr, size_t count);
 uint64_t EmuReadReturnAddress(uc_engine* uc);
 bool EmuReadNullTermUnicodeString(uc_engine* uc, uint64_t address, std::wstring& str);
 bool EmuReadNullTermString(uc_engine* uc, uint64_t address, std::string& str);
-void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT);
+void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT, argh::parser&);
 
 static ULONG ExtractEntryPointRva(PVOID ModuleBase) {
     return RtlImageNtHeader(ModuleBase)->OptionalHeader.AddressOfEntryPoint;
@@ -226,7 +227,7 @@ bool PeEmulation::RegisterAPIEmulation(const std::wstring& DllName, const char* 
             for (size_t j = 0; j < m->FakeAPIs.size(); ++j) {
                 if (m->FakeAPIs[j].ProcedureName == ProcedureName) {
                     AddAPIEmulation(&m->FakeAPIs[j], callback, argsCount);
-                    LOG("registered API emulation for {} in {} at {:#x}", ProcedureName, narrow(m->DllName), m->FakeAPIs[j].VirtualAddress);
+                    //LOG("registered API emulation for {} in {} at {:#x}", ProcedureName, narrow(m->DllName), m->FakeAPIs[j].VirtualAddress);
                     return true;
                 }
             }
@@ -747,6 +748,12 @@ uintptr_t uc_rip(uc_engine* uc) {
     return rip;
 }
 
+uintptr_t uc_qword(uc_engine* uc, uintptr_t addr) {
+    uintptr_t rip = 0;
+    uc_mem_read(uc, addr, &rip, sizeof(rip));
+    return rip;
+}
+
 template <typename T = uintptr_t>
 T uc_peek(uc_engine* uc) {
     T value;
@@ -799,22 +806,24 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
 
     ctx->FlushMemMapping();
 
-    if (ctx->m_Disassemble) {
+    if (ctx->m_Disassemble || ctx->m_RewriteRsp) {
         static bool was_disassembling = true;
         const uint64_t virtualBase    = ctx->NormaliseBase(address);
         mem::region rr(ctx->m_ImageBase, ctx->m_ImageEnd - ctx->m_ImageBase);
-        auto ripadd = [&](const std::string& str, uintptr_t rip) {
+        auto ripadd = [&](const std::string& str, uintptr_t rip, uintptr_t& abso) {
             if (~pystring::find(str, "[rip ")) {
                 auto splut = preg_split(" ([-+]) ", pystring::rstrip(str, "]"), MAXINT, PREG_SPLIT_DELIM_CAPTURE);
                 if (splut.size() == 3) {
-                    return fmt::format("[rel {:#x}]", rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
+                    abso = (rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
+                    LOG("abso: {:x}", abso);
+                    return fmt::format("[rel {:#x}]", abso);
                 }
             }
             return str;
         };
 
         auto [it, suc] = visited.emplace(address);
-        if (ctx->m_DisassembleForce || suc) {
+        if (ctx->m_DisassembleForce || ctx->m_RewriteRsp || suc) {
             was_disassembling = true;
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
@@ -824,7 +833,6 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
 
             int64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
-
             uint8_t* code   = codeBuffer;
             size_t codeSize = size;
             auto count      = cs_disasm(ctx->m_cs, code, codeSize, virtualBase, 0, &insn);
@@ -834,16 +842,59 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 std::string op_string = insn[ii].op_str;
                 //regex = r"\b(rip[+-]0x[0-9a-f]+)"
                 //operand = re.sub(regex, lambda m: ripadd(m.group(), ea + size), operand, 0, re.IGNORECASE)
+                uintptr_t rip_rel_addr = 0;
                 if (~pystring::find(op_string, "[rip ")) {
                     std::vector<std::string> splut;
                     pystring::split(op_string, splut, ", ");
-                    op_string = _::join_array(_::map2(splut, [&](const std::string& s) { return ripadd(s, ctx->NormaliseBase(address + insn->size)); }), ", ");
+                    op_string = _::join_array(_::map2(splut, [&](const std::string& s) { return ripadd(s, ctx->NormaliseBase(address + insn->size), rip_rel_addr); }), ", ");
                 }
 
                 op_string = preg_replace(" ([-+]) ", R"($1)", op_string.c_str());
+                auto mnem = insn[ii].mnemonic;
+                std::string mnem_str(mnem);
+                auto disasm = pystring::rstrip(fmt::format("{} {}", mnem, op_string));
+
+                //if (mnem == "xchg") {
+                //    auto& xchg_count = insn_count[mnem];
+                //    xchg_count       = xchg_count + 1;
+                //    if (xchg_count == 1) {
+
+                //    }
+                //}
+                if (ctx->m_RewriteRsp) {
+                    static uintptr_t last_self_ptr = 0;
+                    auto e_rsp                     = 0x50000 - rsp;
+                    // e = 50 - r
+                    // e + r = 50
+                    // r = 50 - e
+                    if (e_rsp == 0x200 && !ctx->m_RewriteRspDone) {
+                        ctx->m_RewriteRspDone   = true;
+                        uintptr_t resume_target = ctx->m_ImageEnd + 0x100 + 0x144b741c6 - 0x144b74100 + 6;
+                        uc_mem_write(uc, 0x50000 - 0x1f8, &resume_target, sizeof(resume_target));
+                        ctx->m_BalanceEntry = virtualBase;
+                        LOG("rewrote RSP to {:x}", resume_target);
+                    } else if (e_rsp > 0x200) {
+                        if (rip_rel_addr && (mnem_str == "lea" || mnem_str == "mov")) {
+                            uintptr_t this_ptr;
+                            if (mnem_str == "lea") {
+                                this_ptr = rip_rel_addr;
+                                LOG("lea: {:x}", this_ptr);
+                            } else {
+                                this_ptr = uc_qword(uc, rip_rel_addr);
+                                LOG("mov: {:x}", this_ptr);
+                            }
+                            if (this_ptr == last_self_ptr) {
+                                ctx->m_BalanceEntry = this_ptr;
+                                ctx->m_RewriteRsp   = false;
+                                LOG("starting address is {:x}", this_ptr);
+                            }
+                            last_self_ptr = this_ptr;
+                        }
+                    }
+                }
 
                 if (ctx->m_SkipSecondCall || ctx->m_SkipFourthCall) {
-                    if (!strcmp(insn[ii].mnemonic, "call")) {
+                    if (!strcmp(mnem, "call")) {
                         char* errch      = NULL;
                         uintptr_t target = strtoull(op_string.c_str(), &errch, 16);
                         if (*errch != '\0') {
@@ -856,9 +907,9 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             ctx->m_Calls.emplace_back(ctx->NormaliseBase(address, 0), ctx->NormaliseBase(address + insn[ii].size + mem::pointer(code - 4).as<int32_t&>(), 0));
                             if (megafunc)
                                 op_string = megafunc->Lookup(target);
-                            auto& call_count = insn_count[insn[ii].mnemonic];
+                            auto& call_count = insn_count[mnem];
                             call_count       = call_count + 1;
-                            *outs << fmt::format("{} {} used {} times with unique target\n", insn[ii].mnemonic, op_string, call_count);
+                            *outs << fmt::format("{} {} used {} times with unique target\n", mnem, op_string, call_count);
                             if ((ctx->m_SkipSecondCall && call_count == 2)) {
                                 *outs << "skipping call " << call_count << " to " << op_string << "\n";
                                 advance_rip(uc, 5);
@@ -910,27 +961,27 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     std::stringstream region2;
                     if (ctx->FindAddressInRegion(address, region2)) {
                         if (megafunc)
-                            *outs << megafunc->Lookup(virtualBase - 0x140000000) << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string2 << "\n";
+                            *outs << megafunc->Lookup(virtualBase - 0x140000000) << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << mnem << "\t\t" << op_string2 << "\n";
                         else
-                            *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string2 << "\n";
+                            *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << mnem << "\t\t" << op_string2 << "\n";
                     } else {
-                        *outs << std::hex << virtualBase << "\t\t" << 0x50000 - rsp << "\t" << std::dec << insn[ii].mnemonic << "\t\t" << op_string2 << "\n";
+                        *outs << std::hex << virtualBase << "\t\t" << 0x50000 - rsp << "\t" << std::dec << mnem << "\t\t" << op_string2 << "\n";
                     }
                     cs_free(insn, count);
                 }
 #ifdef USE_BOOST
                 if (ctx->m_Obfu) {
                     static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
-                    if (!pystring::startswith(insn[ii].mnemonic, "nop")) {
+                    if (!pystring::startswith(mnem, "nop")) {
                         FuncTailInsn fti;
                         fti.ea(virtualBase)
-                            .text(pystring::rstrip(fmt::format("{} {}", insn[ii].mnemonic, op_string)))
+                            .text(pystring::rstrip(fmt::format("{} {}", mnem, op_string)))
                             .size(size)
                             .code(std::string((char*)codeBuffer, size))
-                            .mnemonic(insn[ii].mnemonic)
+                            .mnemonic(mnem)
                             .operands(op_string);
 
-                        //history.push_back(fmt::format("{} {}", insn[ii].mnemonic, op_string));
+                        //history.push_back(fmt::format("{} {}", mnem, op_string));
                         history.push_back(fti);
                     }
 
@@ -946,6 +997,46 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: call-jmp");
+                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
+                            visited.erase(lhs.ea());
+                            visited.erase(rhs.ea());
+                            return lhs.ea() + lhs.size() == rhs.ea();
+                        });
+                        for (auto chunk : chunks) {
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 11)
+                                mbs(chunk.front().ea()).nop(chunk_len);
+                            else {
+                                mbs(chunk.front().ea())
+                                    .call(parseUint(capture_groups["ctarget"][0], 16))
+                                    .jmp(parseUint(capture_groups["jtarget"][0], 16));
+                                break;
+                            }
+                        }
+
+#ifdef REVISIT_OBFU
+                        // this is really:  `call ctarget` `jmp jtarget`, and
+                        // we need a way to trigger our "call counter"... lets
+                        // use some temporary memory as a trampoline-ish device:
+                        set_rip(ctx->m_uc, scratch);
+                        scratch = mbs(scratch)
+                                      .nop(1)
+                                      .call(parseUint(capture_groups["ctarget"][0], 16))
+                                      .jmp(parseUint(capture_groups["jtarget"][0], 16))
+                                      .as<uintptr_t>();
+                        adjust_rsp(ctx->m_uc, +8);
+                        return;
+#endif
+                    }
+
+                    if (1 && multimatch(history, {
+                                                     R"(push rbp)",
+                                                     R"(lea rbp, \[rel ({jtarget}[::address::])\])",
+                                                     R"(xchg qword ptr \[rsp\], rbp)",
+                                                     R"(jmp ({ctarget}[::address::]))",
+                                                 },
+                                        capture_groups, insn_groups, insn_list, '$')) {
+
+                        LOG("multimatch: call-jmp-double-push");
                         auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
                             visited.erase(lhs.ea());
                             visited.erase(rhs.ea());
@@ -2194,6 +2285,7 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx) {
 
     read_path /= read_path / "read";
     written_path = written_path / "written";
+    LOG("read_path: {}", read_path.string());
 
     if (ctx.m_Unpack) {
         WriteMemoryBitmapAccesses(uc, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
@@ -2259,7 +2351,7 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
     virtual_buffer_t RebuildSectionBuffer;
     mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
     auto m_normalise_base = [&](mem::pointer& ea) {
-        return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+        return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
     };
 
     uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
@@ -2356,7 +2448,7 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
     return 0;
 }
 
-int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_address) {
+int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_address, int type = 0) {
     /*
             // Copy of StackBalance to create proper stack for execution of code (prologue_address)
         
@@ -2395,22 +2487,22 @@ int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_add
             14000102C  57                                            push    rdi
             14000102D  41 53                                         push    r11
             14000102F  48 8D A4 24 00 FF FF FF                       lea     rsp, [rsp-100h]
-            140001037  66 44 0F 11 3C 24                             movupd  xmmword ptr [rsp], xmm15
-            14000103D  66 0F 11 7C 24 10                             movupd  xmmword ptr [rsp+10h], xmm7
-            140001043  66 0F 11 5C 24 20                             movupd  xmmword ptr [rsp+20h], xmm3
-            140001049  66 44 0F 11 54 24 30                          movupd  xmmword ptr [rsp+30h], xmm10
-            140001050  66 0F 11 74 24 40                             movupd  xmmword ptr [rsp+40h], xmm6
-            140001056  66 0F 11 6C 24 50                             movupd  xmmword ptr [rsp+50h], xmm5
-            14000105C  66 0F 11 4C 24 60                             movupd  xmmword ptr [rsp+60h], xmm1
-            140001062  66 44 0F 11 4C 24 70                          movupd  xmmword ptr [rsp+70h], xmm9
-            140001069  66 44 0F 11 B4 24 80 00 00 00                 movupd  xmmword ptr [rsp+80h], xmm14
-            140001073  66 44 0F 11 84 24 90 00 00 00                 movupd  xmmword ptr [rsp+90h], xmm8
-            14000107D  66 44 0F 11 A4 24 A0 00 00 00                 movupd  xmmword ptr [rsp+0A0h], xmm12
-            140001087  66 0F 11 94 24 B0 00 00 00                    movupd  xmmword ptr [rsp+0B0h], xmm2
-            140001090  66 44 0F 11 9C 24 C0 00 00 00                 movupd  xmmword ptr [rsp+0C0h], xmm11
-            14000109A  66 0F 11 84 24 D0 00 00 00                    movupd  xmmword ptr [rsp+0D0h], xmm0
-            1400010A3  66 44 0F 11 AC 24 E0 00 00 00                 movupd  xmmword ptr [rsp+0E0h], xmm13
-            1400010AD  66 0F 11 A4 24 F0 00 00 00                    movupd  xmmword ptr [rsp+0F0h], xmm4
+            140001037  66 44 0F 11 3C 24                             movupd  xmmword [rsp], xmm15
+            14000103D  66 0F 11 7C 24 10                             movupd  xmmword [rsp+10h], xmm7
+            140001043  66 0F 11 5C 24 20                             movupd  xmmword [rsp+20h], xmm3
+            140001049  66 44 0F 11 54 24 30                          movupd  xmmword [rsp+30h], xmm10
+            140001050  66 0F 11 74 24 40                             movupd  xmmword [rsp+40h], xmm6
+            140001056  66 0F 11 6C 24 50                             movupd  xmmword [rsp+50h], xmm5
+            14000105C  66 0F 11 4C 24 60                             movupd  xmmword [rsp+60h], xmm1
+            140001062  66 44 0F 11 4C 24 70                          movupd  xmmword [rsp+70h], xmm9
+            140001069  66 44 0F 11 B4 24 80 00 00 00                 movupd  xmmword [rsp+80h], xmm14
+            140001073  66 44 0F 11 84 24 90 00 00 00                 movupd  xmmword [rsp+90h], xmm8
+            14000107D  66 44 0F 11 A4 24 A0 00 00 00                 movupd  xmmword [rsp+0A0h], xmm12
+            140001087  66 0F 11 94 24 B0 00 00 00                    movupd  xmmword [rsp+0B0h], xmm2
+            140001090  66 44 0F 11 9C 24 C0 00 00 00                 movupd  xmmword [rsp+0C0h], xmm11
+            14000109A  66 0F 11 84 24 D0 00 00 00                    movupd  xmmword [rsp+0D0h], xmm0
+            1400010A3  66 44 0F 11 AC 24 E0 00 00 00                 movupd  xmmword [rsp+0E0h], xmm13
+            1400010AD  66 0F 11 A4 24 F0 00 00 00                    movupd  xmmword [rsp+0F0h], xmm4
             1400010AD
             1400010B6  6A 10                                         push    10h
             1400010B8  48 F7 C4 0F 00 00 00                          test    rsp, 0Fh
@@ -2419,25 +2511,25 @@ int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_add
             1400010C3
             1400010C3                                skip_balance:
             1400010C3  48 83 EC 08                                   sub     rsp, 8
-                       48 89 e5                                      mov     rbp, rsp
-            1400010C7  FF 15 A2 00 00 00                             call    qword ptr cs:TheChecker
+            (inserted) 48 89 e5                                      mov     rbp, rsp
+            1400010C7  FF 15 A2 00 00 00                             call    cs:TheChecker
             1400010CD  48 03 64 24 08                                add     rsp, [rsp+8]
-            1400010D2  66 44 0F 10 3C 24                             movupd  xmm15, xmmword ptr [rsp]
-            1400010D8  66 0F 10 7C 24 10                             movupd  xmm7, xmmword ptr [rsp+10h]
-            1400010DE  66 0F 10 5C 24 20                             movupd  xmm3, xmmword ptr [rsp+20h]
-            1400010E4  66 44 0F 10 54 24 30                          movupd  xmm10, xmmword ptr [rsp+30h]
-            1400010EB  66 0F 10 74 24 40                             movupd  xmm6, xmmword ptr [rsp+40h]
-            1400010F1  66 0F 10 6C 24 50                             movupd  xmm5, xmmword ptr [rsp+50h]
-            1400010F7  66 0F 10 4C 24 60                             movupd  xmm1, xmmword ptr [rsp+60h]
-            1400010FD  66 44 0F 10 4C 24 70                          movupd  xmm9, xmmword ptr [rsp+70h]
-            140001104  66 44 0F 10 B4 24 80 00 00 00                 movupd  xmm14, xmmword ptr [rsp+80h]
-            14000110E  66 44 0F 10 84 24 90 00 00 00                 movupd  xmm8, xmmword ptr [rsp+90h]
-            140001118  66 44 0F 10 A4 24 A0 00 00 00                 movupd  xmm12, xmmword ptr [rsp+0A0h]
-            140001122  66 0F 10 94 24 B0 00 00 00                    movupd  xmm2, xmmword ptr [rsp+0B0h]
-            14000112B  66 44 0F 10 9C 24 C0 00 00 00                 movupd  xmm11, xmmword ptr [rsp+0C0h]
-            140001135  66 0F 10 84 24 D0 00 00 00                    movupd  xmm0, xmmword ptr [rsp+0D0h]
-            14000113E  66 44 0F 10 AC 24 E0 00 00 00                 movupd  xmm13, xmmword ptr [rsp+0E0h]
-            140001148  66 0F 10 A4 24 F0 00 00 00                    movupd  xmm4, xmmword ptr [rsp+0F0h]
+            1400010D2  66 44 0F 10 3C 24                             movupd  xmm15, xmmword [rsp]
+            1400010D8  66 0F 10 7C 24 10                             movupd  xmm7, xmmword [rsp+10h]
+            1400010DE  66 0F 10 5C 24 20                             movupd  xmm3, xmmword [rsp+20h]
+            1400010E4  66 44 0F 10 54 24 30                          movupd  xmm10, xmmword [rsp+30h]
+            1400010EB  66 0F 10 74 24 40                             movupd  xmm6, xmmword [rsp+40h]
+            1400010F1  66 0F 10 6C 24 50                             movupd  xmm5, xmmword [rsp+50h]
+            1400010F7  66 0F 10 4C 24 60                             movupd  xmm1, xmmword [rsp+60h]
+            1400010FD  66 44 0F 10 4C 24 70                          movupd  xmm9, xmmword [rsp+70h]
+            140001104  66 44 0F 10 B4 24 80 00 00 00                 movupd  xmm14, xmmword [rsp+80h]
+            14000110E  66 44 0F 10 84 24 90 00 00 00                 movupd  xmm8, xmmword [rsp+90h]
+            140001118  66 44 0F 10 A4 24 A0 00 00 00                 movupd  xmm12, xmmword [rsp+0A0h]
+            140001122  66 0F 10 94 24 B0 00 00 00                    movupd  xmm2, xmmword [rsp+0B0h]
+            14000112B  66 44 0F 10 9C 24 C0 00 00 00                 movupd  xmm11, xmmword [rsp+0C0h]
+            140001135  66 0F 10 84 24 D0 00 00 00                    movupd  xmm0, xmmword [rsp+0D0h]
+            14000113E  66 44 0F 10 AC 24 E0 00 00 00                 movupd  xmm13, xmmword [rsp+0E0h]
+            140001148  66 0F 10 A4 24 F0 00 00 00                    movupd  xmm4, xmmword [rsp+0F0h]
             140001151  48 8D A4 24 00 01 00 00                       lea     rsp, [rsp+100h]
             140001159  41 5B                                         pop     r11
             14000115B  5F                                            pop     rdi
@@ -2458,6 +2550,143 @@ int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_add
             14000116F                                TheChecker:
             14000116F  00 00 00 00 00 00 00 00                       dq    0
         */
+
+    /*
+                push    1
+                push    2
+                push    3
+                push    4
+TheJudge:
+                call    TheWitch
+                int     3
+TheWitch:
+                call    TheCorpsegrinder
+                int     3
+TheCorpsegrinder:
+                call    TheBalancer
+                int     3
+TheBalancer:
+                push    r8
+                push    r13
+                push    r12
+                push    r15
+                push    rsi
+                push    rdx
+                push    rbx
+                push    r9
+                push    rax
+                push    r14
+                push    r10
+                push    rdi
+                push    r11
+                lea     rsp, [rsp-100h]
+                movupd  oword [rsp], xmm15
+                movupd  oword [rsp+10h], xmm7
+                movupd  oword [rsp+20h], xmm3
+                movupd  oword [rsp+30h], xmm10
+                movupd  oword [rsp+40h], xmm6
+                movupd  oword [rsp+50h], xmm5
+                movupd  oword [rsp+60h], xmm1
+                movupd  oword [rsp+70h], xmm9
+                movupd  oword [rsp+80h], xmm14
+                movupd  oword [rsp+90h], xmm8
+                movupd  oword [rsp+0A0h], xmm12
+                movupd  oword [rsp+0B0h], xmm2
+                movupd  oword [rsp+0C0h], xmm11
+                movupd  oword [rsp+0D0h], xmm0
+                movupd  oword [rsp+0E0h], xmm13
+                movupd  oword [rsp+0F0h], xmm4
+                push    10h
+                test    rsp, 0Fh
+                jnz     short skip_balance
+                push    18h
+skip_balance:
+		jmp qword [rel TheChecker]
+force_resume:
+                add     rsp, [rsp+8]
+                movupd  xmm15, xmmword [rsp]
+                movupd  xmm7, xmmword [rsp+10h]
+                movupd  xmm3, xmmword [rsp+20h]
+                movupd  xmm10, xmmword [rsp+30h]
+                movupd  xmm6, xmmword [rsp+40h]
+                movupd  xmm5, xmmword [rsp+50h]
+                movupd  xmm1, xmmword [rsp+60h]
+                movupd  xmm9, xmmword [rsp+70h]
+                movupd  xmm14, xmmword [rsp+80h]
+                movupd  xmm8, xmmword [rsp+90h]
+                movupd  xmm12, xmmword [rsp+0A0h]
+                movupd  xmm2, xmmword [rsp+0B0h]
+                movupd  xmm11, xmmword [rsp+0C0h]
+                movupd  xmm0, xmmword [rsp+0D0h]
+                movupd  xmm13, xmmword [rsp+0E0h]
+                movupd  xmm4, xmmword [rsp+0F0h]
+                lea     rsp, [rsp+100h]
+                pop     r11
+                pop     rdi
+                pop     r10
+                pop     r14
+                pop     rax
+
+                pop     r9
+                pop     rbx
+                pop     rdx
+                pop     rsi
+                pop     r15
+                pop     r12
+                pop     r13
+                pop     r8
+                retn
+TheChecker:
+                dq    0
+
+*/
+
+    unsigned char prologue_bytes_short[] =
+        //{
+        //       0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd,
+        //       0x3, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd, 0x3, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd, 0x3,
+        //       0x41, 0x50, 0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51,
+        //       0x50, 0x41, 0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0,
+        //       0xff, 0xff, 0xff, 0x66, 0x44, 0xf, 0x11, 0x3c, 0x24, 0x66, 0xf, 0x11, 0x7c,
+        //       0x24, 0x10, 0x66, 0xf, 0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x11, 0x54,
+        //       0x24, 0x30, 0x66, 0xf, 0x11, 0x74, 0x24, 0x40, 0x66, 0xf, 0x11, 0x6c, 0x24,
+        //       0x50, 0x66, 0xf, 0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x11, 0x4c, 0x24,
+        //       0x70, 0x66, 0x44, 0xf, 0x11, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf,
+        //       0x11, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xa4, 0x24, 0xa0,
+        //       0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44,
+        //       0xf, 0x11, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x84, 0x24, 0xd0,
+        //       0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66,
+        //       0xf, 0x11, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf,
+        //       0x0, 0x0, 0x0, 0x75, 0x2, 0x6a, 0x18, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0};
+
+        {
+            0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd,
+            0x3, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd, 0x3, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd, 0x3,
+            0x41, 0x50, 0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51,
+            0x50, 0x41, 0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0,
+            0xff, 0xff, 0xff, 0x66, 0x44, 0xf, 0x11, 0x3c, 0x24, 0x66, 0xf, 0x11, 0x7c,
+            0x24, 0x10, 0x66, 0xf, 0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x11, 0x54,
+            0x24, 0x30, 0x66, 0xf, 0x11, 0x74, 0x24, 0x40, 0x66, 0xf, 0x11, 0x6c, 0x24,
+            0x50, 0x66, 0xf, 0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x11, 0x4c, 0x24,
+            0x70, 0x66, 0x44, 0xf, 0x11, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf,
+            0x11, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xa4, 0x24, 0xa0,
+            0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44,
+            0xf, 0x11, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x84, 0x24, 0xd0,
+            0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66,
+            0xf, 0x11, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf,
+            0x0, 0x0, 0x0, 0x75, 0x2, 0x6a, 0x18, 0xff, 0x25, 0xa2, 0x0, 0x0, 0x0, 0x48,
+            0x3, 0x64, 0x24, 0x8, 0x66, 0x44, 0xf, 0x10, 0x3c, 0x24, 0x66, 0xf, 0x10, 0x7c,
+            0x24, 0x10, 0x66, 0xf, 0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x10, 0x54,
+            0x24, 0x30, 0x66, 0xf, 0x10, 0x74, 0x24, 0x40, 0x66, 0xf, 0x10, 0x6c, 0x24,
+            0x50, 0x66, 0xf, 0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x10, 0x4c, 0x24,
+            0x70, 0x66, 0x44, 0xf, 0x10, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf,
+            0x10, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xa4, 0x24, 0xa0,
+            0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44,
+            0xf, 0x10, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x84, 0x24, 0xd0,
+            0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66,
+            0xf, 0x10, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x48, 0x8d, 0xa4, 0x24, 0x0, 0x1,
+            0x0, 0x0, 0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59, 0x5b,
+            0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
 
     unsigned char prologue_bytes[] = {
         0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc,
@@ -2493,9 +2722,17 @@ int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_add
         0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
 
     uc_err err;
-    err = uc_mem_write(uc, prologue_address, prologue_bytes, sizeof(prologue_bytes));
-    err = uc_mem_write(uc, prologue_address + sizeof(prologue_bytes), &start_address, 8);
-    return sizeof(prologue_bytes);
+    if (type == 0) {
+        err = uc_mem_write(uc, prologue_address, prologue_bytes, sizeof(prologue_bytes));
+        err = uc_mem_write(uc, prologue_address + sizeof(prologue_bytes), &start_address, 8);
+        return sizeof(prologue_bytes);
+    } else if (type == 1) {
+        err = uc_mem_write(uc, prologue_address, prologue_bytes_short, sizeof(prologue_bytes_short));
+        err = uc_mem_write(uc, prologue_address + sizeof(prologue_bytes_short), &start_address, 8);
+        return sizeof(prologue_bytes_short);
+    }
+    LOG(__FUNCTION__ ": unknown prologue type: {}", type);
+    return 0;
 }
 
 void RegisterAPIs(PeEmulation& ctx) {
@@ -2592,6 +2829,26 @@ int main(int argc, char** argv) {
     for (auto& param : cmdl.params())
         *outs << '\t' << param.first << " : " << param.second << '\n';
 
+    if (cmdl["tmp"]) {
+        //tmpname: C:\Users\sfink\AppData\Local\Temp\ss44.0
+        //fulltmpname: C:\Users\sfink\AppData\Local\Temp\ss44.1
+        //tmpdir: C:\Users\sfink\AppData\Local\Temp
+
+        LOG("tmpname: {}", tmpname());
+        LOG("fulltmpname: {}", fulltmpname());
+        LOG("tmpdir: {}", tmpdir());
+    }
+
+    {
+        std::string nasm;
+        if (cmdl("nasm")) {
+            nasm = cmdl("nasm").str();
+            LOG("assembling: {}", nasm);
+            YasmExt yasm(nasm, 0x140001000);
+            yasm.prep();
+        }
+    }
+
     //*outs << "\nValues for all multiple-use parameters:\n";
     //for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
     //    if (cmdl.params(param).size() > 1) {
@@ -2617,6 +2874,7 @@ int main(int argc, char** argv) {
     ctx.m_BoundCheck          = cmdl["boundcheck"];
     ctx.m_Dump                = cmdl["save-dump", "dump"];
     ctx.m_FindChecks          = cmdl["decrypt", "find"];
+    ctx.m_FindBalance         = cmdl["find-balance"];
     ctx.m_SkipSecondCall      = cmdl["skip-second-call"];
     ctx.m_SkipFourthCall      = cmdl["skip-4th-call"];
     ctx.m_Obfu                = cmdl["obfu"];
@@ -2626,6 +2884,23 @@ int main(int argc, char** argv) {
     ctx.m_DisableRebase       = cmdl["no-aslr"];
     ctx.m_Dwords              = cmdl["dwords"];
     ctx.m_Sandbox             = !cmdl["no-sandbox"];
+    if (cmdl("rax")) cmdl("rax") >> ctx.m_InitReg.Rax;
+    if (cmdl("rcx")) cmdl("rcx") >> ctx.m_InitReg.Rcx;
+    if (cmdl("rdx")) cmdl("rdx") >> ctx.m_InitReg.Rdx;
+    if (cmdl("rbx")) cmdl("rbx") >> ctx.m_InitReg.Rbx;
+    if (cmdl("rsp")) cmdl("rsp") >> ctx.m_InitReg.Rsp;
+    if (cmdl("rbp")) cmdl("rbp") >> ctx.m_InitReg.Rbp;
+    if (cmdl("rsi")) cmdl("rsi") >> ctx.m_InitReg.Rsi;
+    if (cmdl("rdi")) cmdl("rdi") >> ctx.m_InitReg.Rdi;
+    if (cmdl("r8")) cmdl("r8") >> ctx.m_InitReg.R8;
+    if (cmdl("r9")) cmdl("r9") >> ctx.m_InitReg.R9;
+    if (cmdl("r10")) cmdl("r10") >> ctx.m_InitReg.R10;
+    if (cmdl("r11")) cmdl("r11") >> ctx.m_InitReg.R11;
+    if (cmdl("r12")) cmdl("r12") >> ctx.m_InitReg.R12;
+    if (cmdl("r13")) cmdl("r13") >> ctx.m_InitReg.R13;
+    if (cmdl("r14")) cmdl("r14") >> ctx.m_InitReg.R14;
+    if (cmdl("r15")) cmdl("r15") >> ctx.m_InitReg.R15;
+
     if (cmdl("save-written") >> ctx.m_SaveWritten) {
         if (!fs::is_directory(ctx.m_SaveWritten) && !fs::create_directory(ctx.m_SaveWritten)) {
             *outs << "Not a directory: " << ctx.m_SaveWritten << "\n";
@@ -2774,7 +3049,7 @@ int main(int argc, char** argv) {
 
     uc_hook_add(uc, &trace2, UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH,
                 RwxCallback, &ctx, 1, 0);
-    if (ctx.m_Disassemble) {
+    if (ctx.m_Disassemble || ctx.m_FindBalance) {
         uc_hook_add(uc, &trace3, UC_HOOK_CODE,
                     CodeCallback, &ctx, 1, 0);
     }
@@ -2783,6 +3058,7 @@ int main(int argc, char** argv) {
                 IntrCallback, &ctx, 1, 0);
 
     std::vector<std::tuple<std::string, uintptr_t>> fns;
+    std::vector<std::tuple<std::string, uintptr_t>> balance_fns;
     if (ctx.m_StartAddresses.size()) {
         for (uintptr_t ptr : ctx.m_StartAddresses) {
             fns.emplace_back(fmt::format("start_{:x}", ptr), ptr);
@@ -2790,6 +3066,18 @@ int main(int argc, char** argv) {
     }
 
     // --patch="14000100:66 90 E9 00 00 00 00" --patch= ...
+    for (auto& param : cmdl.params("mem")) {
+        auto st_address  = string_between("", ":", param.second);
+        auto st_commands = string_between(":", "", param.second);
+        uintptr_t result = 0;
+        LOG("mem: {}", st_commands);
+        if (auto addr = asQword(st_address)) {
+            result = *addr;
+        }
+        mem_parser(ctx, st_commands, result, cmdl);
+        outs->flush();
+    }
+
     for (auto& param : cmdl.params("patch")) {
         auto st_addr  = string_between("", ":", param.second);
         auto st_patch = string_between(":", "", param.second);
@@ -2798,13 +3086,6 @@ int main(int argc, char** argv) {
             mbs(*addr).write_pattern(st_patch.c_str());
         } else
             LOG("patching: couldn't process {} as an address", st_addr);
-    }
-
-    for (auto& param : cmdl.params("mem")) {
-        auto st_purpose  = string_between("", ":", param.second);
-        auto st_commands = string_between(":", "", param.second);
-		uintptr_t result;
-        mem_parser(ctx, st_commands, result);
     }
 
     {
@@ -2839,6 +3120,39 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (ctx.m_FindBalance) {
+        virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
+        uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
+        mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
+        mem::region rr(ctx.m_ImageBase, ctx.m_ImageEnd - ctx.m_ImageBase);
+
+        auto normalise_base = [&](uintptr_t ea) {
+            return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
+            // return ea - (uintptr_t)imagebuf.GetBuffer() + 0x140000000;
+        };
+        auto m_normalise_base = [&](mem::pointer& ea) {
+            return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+        };
+
+        // mb("6A 10 48 F7 C4 0F 00 00 00 0F 85 ?? ?? ?? ?? E9").add(11).rip()
+        auto found = scan_all_with_iteratee(r, mem::pattern("6A 10 48 F7 C4 0F 00 00 00 0F 85 ?? ?? ?? ?? E9"),
+                                            [&](mem::pointer ea) -> uintptr_t {
+                                                mem::pointer ptr(ea);
+                                                ptr = ptr.add(11).rip(4);
+                                                if (r.contains(ptr)) {
+                                                    return m_normalise_base(ptr);
+                                                }
+                                            });
+
+        // sort and make unique, then add to list of functions to scan
+        std::sort(found.begin(), found.end(), [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
+        auto last = std::unique(found.begin(), found.end(), [](const auto& lhs, const auto& rhs) { return lhs == rhs; });
+        found.erase(last, found.end());
+        for (auto ptr : found) {
+            balance_fns.emplace_back(fmt::format("BalanceFunc_{:x}", ptr.as<uintptr_t>()), ptr.as<uintptr_t>());
+        }
+        *outs << "Found " << balance_fns.size() << " matching balance functions\n";
+    }
     if (ctx.m_FindChecks) {
         virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
         uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
@@ -2846,11 +3160,11 @@ int main(int argc, char** argv) {
         mem::region rr(ctx.m_ImageBase, ctx.m_ImageEnd - ctx.m_ImageBase);
 
         auto normalise_base = [&](uintptr_t ea) {
-            return r.adjust_base(0x140000000, ea).as<uintptr_t>();
+            return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
             // return ea - (uintptr_t)imagebuf.GetBuffer() + 0x140000000;
         };
         auto m_normalise_base = [&](mem::pointer& ea) {
-            return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+            return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
         };
 
         std::set<uintptr_t> find_ref_dupes;
@@ -2893,6 +3207,7 @@ int main(int argc, char** argv) {
             }
         }
         if (cmdl("find-ref")) {
+            LOG("that's it");
             outs->flush();
             TerminateProcess(GetCurrentProcess(), 2);
         }
@@ -3030,17 +3345,11 @@ int main(int argc, char** argv) {
         }
         *outs << "Found " << fns.size() << " matching functions\n";
     }
-
-    if (fns.empty()) {
-        //uintptr_t base_address           = 0x140000000;
-        //base_address                     = ctx.m_ImageEnd;
-        //const uintptr_t prologue_address = base_address + 0x100;
-        //uintptr_t dst                    = 0x140CBC8B1;
-        //err                              = uc_mem_write(uc, prologue_address, prologue_bytes, sizeof(prologue_bytes));
-        //err                              = uc_mem_write(uc, prologue_address + sizeof(prologue_bytes), &dst, 8);
+    if (ctx.m_Unpack) {
         uintptr_t dst = ctx.m_ExecuteFromRip;
 
-#if 1
+#ifdef USE_BOOST
+
         // 335.2 mbs(0x140813A76).nop(5);            // skip making all segments writable
         // mbs(0x143B486E3).jmp(0x1439C66BF);  // skip tamper and size check
         // 350.2
@@ -3112,6 +3421,7 @@ int main(int argc, char** argv) {
             }
         }
 
+#endif
         auto patch_anti_tamper = [&] {
             if (cmdl["patch-anti-tamper"]) {
                 virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
@@ -3119,10 +3429,10 @@ int main(int argc, char** argv) {
                 mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
 
                 auto normalise_base = [&](uintptr_t ea) {
-                    return r.adjust_base(0x140000000, ea).as<uintptr_t>();
+                    return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
                 };
                 auto m_normalise_base = [&](mbs& ea) {
-                    return r.adjust_base(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
+                    return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
                 };
                 // mem("55 48 81 ec b0").find("3b c2 0f 85", 128).add(4).rip(4).matches("c7 45", 2).dword()
                 // m = mem(FindInSegments("48 89 6c 24 f8 48 8d 64 24 f8")).find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45 64 01 00 00 00", 7)
@@ -3271,12 +3581,9 @@ int main(int argc, char** argv) {
         // 335.2
         // mbs(0x14384BE32).jmp(0x143612F8C);  // skip tamper and segment check
 
-#else
-
         // mbs(0x140d8d394).nop(5);            // skip making all segments writable
-        mbs(0x143bbdb2f).jmp(0x140D03816);  // skip executable tamper check
-        mbs(0x141894D99).jmp(0x143A99FEE);  // skip segment size check
-#endif
+        //mbs(0x143bbdb2f).jmp(0x140D03816);  // skip executable tamper check
+        //mbs(0x141894D99).jmp(0x143A99FEE);  // skip segment size check
         // mbs(0x1417db93c).jmp(0x1417ed648); // skip initial decrypt
         // mbs(0x144874514).write_pattern("c3");
 
@@ -3336,28 +3643,9 @@ int main(int argc, char** argv) {
             uintptr_t base_address           = ctx.m_ImageEnd;
             const uintptr_t prologue_address = base_address + 0x100;
 
-            auto prologue_size = WritePrologue(uc, prologue_address, start_address);
+            auto prologue_size = WritePrologue(uc, prologue_address, start_address, 0);
 
             ResetRegisters(uc, ctx);
-
-            /*
-
-            Function: StackChecksumActual3_239
-            RSP: 0x4ff88
-            uc_emu_start stack: 140a5c90e 48: 0x4ffb8: 0x1
-            uc_emu_start stack: 140a5c90e 40: 0x4ffb0: 0x2
-            uc_emu_start stack: 140a5c90e 32: 0x4ffa8: 0x3
-            uc_emu_start stack: 140a5c90e 24: 0x4ffa0: 0x140cc3aaf
-            uc_emu_start stack: 140a5c90e 16: 0x4ff98: 0x143ea1e55
-            uc_emu_start stack: 140a5c90e 8: 0x4ff90: 0x143dcbfe2
-            uc_emu_start stack: 140a5c90e 0: 0x4ff88: 0x140001019
-            uc_emu_start stack: 140a5c90e -8: 0x4ff80: 0x0
-            uc_emu_start stack: 140a5c90e -16: 0x4ff78: 0x0
-            uc_emu_start stack: 140a5c90e -24: 0x4ff70: 0x0
-            uc_emu_start stack: 140a5c90e -32: 0x4ff68: 0x0
-            uc_emu_start stack: 140a5c90e -40: 0x4ff60: 0x0
-            uc_emu_start stack: 140a5c90e -48: 0x4ff58: 0x1
-        */
 
             *outs << "Function: " << ctx.filename << "\n";
             while (1) {
@@ -3372,6 +3660,37 @@ int main(int argc, char** argv) {
                 }
             }
             uintptr_t fn_address = std::get<1>(tpl);
+            SaveResult(uc, fn_address, ctx);
+        }
+        for (const auto& tpl : balance_fns) {
+            ctx.filename                     = std::get<0>(tpl);
+            uintptr_t start_address          = std::get<1>(tpl);
+            uintptr_t base_address           = ctx.m_ImageEnd;
+            const uintptr_t prologue_address = base_address + 0x100;
+
+            auto prologue_size = WritePrologue(uc, prologue_address, start_address, 1);
+
+            ResetRegisters(uc, ctx);
+            ctx.m_RewriteRsp     = true;
+            ctx.m_RewriteRspDone = false;
+            ctx.m_BalanceEntry   = 0;
+
+            *outs << "Function: " << ctx.filename << "\n";
+            while (1) {
+                err = uc_emu_start(uc, /*ctx.m_ExecuteFromRip*/ prologue_address, prologue_address + prologue_size - 1 /* ctx.m_ImageEnd */, 0, 0);
+
+                if (ctx.m_LastException != STATUS_SUCCESS) {
+                    auto except         = ctx.m_LastException;
+                    ctx.m_LastException = STATUS_SUCCESS;
+                    ctx.RtlRaiseStatus(except);
+                } else {
+                    break;
+                }
+                break;
+            }
+            uintptr_t fn_address = std::get<1>(tpl);
+            if (ctx.m_BalanceEntry)
+                fn_address = ctx.m_BalanceEntry;
             SaveResult(uc, fn_address, ctx);
         }
     }
@@ -3426,18 +3745,17 @@ std::string lnva(const char* format, const Args&... args) {
     std::string text;
     try {
         0 && printf(format, args...);
-        *outs << fmt::sprintf(format, args...);
+        *outs << fmt::sprintf(format, args...) << std::endl;
     } catch (fmt::format_error& e) {
         LOG_DEBUG(__FUNCTION__ "::format(\"%s\"): %s", format, e.what());
     }
     return text;
 };
 
-void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT) {
+void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT, argh::parser& cmdl) {
     // to be written-ish
     std::deque<mem::pointer> stack;
-    auto unnormalise_base = [&](uintptr_t n) -> uintptr_t { return n; };
-    auto normalise_base   = [&](uintptr_t n) -> uintptr_t { return n; };
+    //auto normalise_base   = [&](uintptr_t n) -> uintptr_t { return n; };
     auto safe_dereference = [&](uintptr_t) -> bool { return true; };
     auto push             = [&](mem::pointer p) -> void { stack.emplace_back(p); };
     auto pop              = [&]() -> mem::pointer { auto r = stack.back(); stack.pop_back(); return r; };
@@ -3452,44 +3770,35 @@ void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT) 
     }
 
     if (parser.empty()) return;
-    auto _command = parser.current;
-    if (parser.size() - 1 < 1) {
+    if (parser.size() == 0) {
         lnva(R"(
-[ alloc <size> | push | pop | from_file <filename> | write <size_type> <value> | 
-  pop_write <size_type> | loop <times> '<commands>' | deref | [rip|add|sub|offset] <offset> | 
-  as <size_type> ]
+[ alloc <size> | push | pop | from_file <filename> | write <size_type> <value> | push_param <param> |
+  pop_write <size_type> | loop <times> [\\\"<commands>\\\"|!param-name|<filename] | deref | [rip|add|sub|offset] <offset> | 
+  <filename | [call|jmp] <0x14xxxxxxx> | as <size_type> ]
+
 size_type ::= [u|]int[[8|16|32|64|ptr]_t]
 )");
         return;
     }
 
+    virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
+    uc_mem_read(ctx.m_uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
+    mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
+
+    auto normalise_base     = [&](uintptr_t ea) { return r.adjust_base_to(0x140000000, ea).as<uintptr_t>(); };
+    auto unnormalise_base   = [&](uintptr_t ea) { return r.adjust_base_from(0x140000000, ea).as<uintptr_t>(); };
+    auto m_normalise_base   = [&](mem::pointer& ea) { return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>(); };
+    auto m_unnormalise_base = [&](mem::pointer& ea) { return r.adjust_base_from(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>(); };
+
     bool isPattern = false;
 
-    mem::pointer ptr;
-    std::string _subject = parser.next;
-    if (isPattern) {
-        mem::pattern p(_subject.c_str());
-        mem::default_scanner s(p);
-        mem::module m = mem::module::main();
-        ptr           = s.scan(m);
-    } else {
-        if (auto pointer = asQword(_subject)) {
-            ptr = mem::pointer(unnormalise_base(*pointer));
-        } else {
-            lnva("Pointer \"%s\" was rubbish", _subject.c_str());
-            return;
-        }
-    }
-    if (isPattern && !ptr) {
-        lnva("Pattern \"%s\" was unmatched", _subject.c_str());
-        return;
-    }
-    auto address = normalise_base(ptr.as<uintptr_t>());
-    _RESULT      = ptr.as<uintptr_t>();
-    lnva("%s found at 0x%llx", _command.c_str(), address);
+    mem::pointer ptr(unnormalise_base(_RESULT));
 
-    while (!parser.empty()) {
-        auto cmd = parser.next;
+    for (auto cmd = parser.current; !parser.eof(); cmd = parser.next) {
+        //LOG("mem::ptr {:#x}", m_normalise_base(ptr));
+        if (cmd.empty())
+            break;
+        //LOG("cmd: {}", cmd);
         if (cmd == "alloc") {
             if (!parser.empty()) {
                 if (auto _size = asQword(parser.next, 10)) {
@@ -3504,16 +3813,33 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                     LOG("File does not exist: '{}'", _filename);
                     return;
                 }
-                std::vector<uint8_t> _contents = file_get_contents_bin(_filename);
-                if (!_contents.empty()) {
-                    ptr.put_bytes(_contents);
-                    ptr += _contents.size();
-                }
+                auto _contents = file_get_contents_bin(_filename);
+                ptr.put_bytes(_contents);
+                ptr += _contents.size();
             }
         } else if (cmd == "push") {
             push(ptr);
         } else if (cmd == "pop") {
             ptr = pop();
+        } else if (cmd == "goto") {
+            auto target = parser.next;
+            if (auto _target = asQword(target)) {
+                ptr = mem::pointer(unnormalise_base(*_target));
+            } else {
+                lnva("Couldn't parse address \"%s\"", target.c_str());
+            }
+        } else if (cmd == "jmp") {
+            if (auto func = asQword(parser.next)) {
+                ptr.as<uint8_t&>()           = 0xe9;
+                ptr.offset(1).as<int32_t&>() = ((int)(unnormalise_base(*func) - m_normalise_base(ptr) - 5));
+                ptr += 5;
+            }
+        } else if (cmd == "call") {
+            if (auto func = asQword(parser.next)) {
+                ptr.as<uint8_t&>()           = 0xe8;
+                ptr.offset(1).as<int32_t&>() = ((int)(unnormalise_base(*func) - m_normalise_base(ptr) - 5));
+                ptr += 5;
+            }
         } else if (cmd == "as") {
             if (!parser.empty()) {
                 auto _type = parser.next;
@@ -3538,13 +3864,6 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                 lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), _RESULT);
                 // return;
             }
-        } else if (cmd == "goto") {
-			auto target = parser.next;
-            if (auto _target = asQword(target)) {
-                ptr = mem::pointer(unnormalise_base(*_target));
-            } else {
-				lnva("Couldn't parse address \"%s\"", target.c_str());
-            }
         } else if (cmd == "pop_write") {
             if (!parser.empty()) {
                 auto _type  = parser.next;
@@ -3566,6 +3885,7 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                 }
                 auto _unsigned = matches[1] == "u";
                 int_fast8_t _bits =
+
                     matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
 
                 if (_unsigned) {
@@ -3601,16 +3921,23 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                 int_fast8_t _bits =
                     matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
 
-                // clang-format off
-			if (_unsigned) {
-				ptr.as<uint64_t&>() = (ptr.as<uint64_t&>() & ~((1 << (64 - _bits)) - 1)) | 
-												  (*_value &  ((1 << (64 - _bits)) - 1));
-				ptr += _bits / 8;
-			}
-			else
-				LOG("never really figured out how to do an signed write");
-                // clang-format on
-                lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), _RESULT);
+                if (_unsigned) {
+                    //LOG("reading current value from {:#x} ({:#x})", ptr.as<uint64_t>(), m_normalise_base(ptr));
+                    auto current_value_64 = ptr.as<uint64_t&>();
+                    //LOG("current_value_64: {:#x}", current_value_64);
+                    auto write    = *_value;
+                    auto bit_mask = _bits == 64 ? -1 : (1 << (64 - _bits)) - 1;
+                    //LOG("writing         : {:#x} & {:#x}", write, bit_mask);
+                    auto new_value_64 = (current_value_64 & ~bit_mask) | (write & bit_mask);
+                    //LOG("new_value_64    : {:#x}", new_value_64);
+                    ptr.as<uint64_t&>() = new_value_64;
+
+                    //ptr.as<uint64_t&>() = (ptr.as<uint64_t&>() & ~((1 << (64 - _bits)) - 1)) |
+                    //	  							    (*_value &  ((1 << (64 - _bits)) - 1));
+                    ptr += _bits / 8;
+                    lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), m_normalise_base(ptr));
+                } else
+                    LOG("never really figured out how to do an signed write");
             }
         } else if (cmd == "offset" || cmd == "sub" || cmd == "add" || cmd == "rip") {
             if (!parser.empty()) {
@@ -3623,18 +3950,36 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                     } else if (cmd == "rip") {
                         ptr = ptr.rip(offset);
                     }
-                    lnva("%-8s %-8lli 0x%llx", cmd.c_str(), offset, ptr.as<uintptr_t>());
+                    lnva("%-8s %-8lli 0x%llx", cmd.c_str(), offset, m_normalise_base(ptr));
                 }
             }
+        } else if (cmd[0] == '<') {
+            std::string subject = pystring::rstrip(file_get_contents(cmd.substr(1)));
+            LOG("adding file {} to queue: {}", cmd.substr(1), subject);
+            auto tmp_parser = pogo::WhitespaceTokeniser(subject);
+            parser.insert(tmp_parser.slice(0));
         } else if (cmd == "loop") {
             if (auto _times = asQword(parser.next)) {
                 std::string subject = parser.next;
+                if (subject[0] == '!') {
+                    subject = cmdl(subject.substr(1)).str();
+                }
+                if (subject[0] == '<') {
+                    subject = pystring::rstrip(file_get_contents(subject.substr(1)));
+                }
                 // trim off surrounding 's
-                auto tmp_parser = pogo::WhitespaceTokeniser(subject.substr(1, subject.size() - 2));
+                //auto tmp_parser = pogo::WhitespaceTokeniser(subject.substr(1, subject.size() - 2));
+                LOG("adding to queue {} times: {}", *_times, subject);
+                auto tmp_parser = pogo::WhitespaceTokeniser(subject);
                 _::timesSimple(*_times, [&] {
                     parser.insert(tmp_parser.slice(0));
                 });
             }
+        } else if (cmd == "push_param") {
+            std::string subject = parser.next;
+            uintptr_t target;
+            cmdl(subject) >> target;
+            push(target);
         } else if (cmd == "deref") {
             if (!safe_dereference(ptr.as<uintptr_t>())) {
                 lnva("Exception dereferencing 0x%llu", ptr.as<uintptr_t>());

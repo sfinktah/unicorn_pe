@@ -815,7 +815,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 auto splut = preg_split(" ([-+]) ", pystring::rstrip(str, "]"), MAXINT, PREG_SPLIT_DELIM_CAPTURE);
                 if (splut.size() == 3) {
                     abso = (rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
-                    LOG("abso: {:x}", abso);
+                    //LOG("abso: {:x}", abso);
                     return fmt::format("[rel {:#x}]", abso);
                 }
             }
@@ -878,10 +878,10 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             uintptr_t this_ptr;
                             if (mnem_str == "lea") {
                                 this_ptr = rip_rel_addr;
-                                LOG("lea: {:x}", this_ptr);
+                                //LOG("lea: {:x}", this_ptr);
                             } else {
                                 this_ptr = uc_qword(uc, rip_rel_addr);
-                                LOG("mov: {:x}", this_ptr);
+                                //LOG("mov: {:x}", this_ptr);
                             }
                             if (this_ptr == last_self_ptr) {
                                 ctx->m_BalanceEntry = this_ptr;
@@ -2012,7 +2012,10 @@ void PeEmulation::FlushMemMapping(void) {
         m_MemMappings[i].blocks.clear();
     }
 }
-void WriteMemoryBitmapAccesses(uc_engine* uc, const std::vector<bool>& vec, const std::string& filename, const std::string& prefix) {
+void WriteMemoryBitmapAccesses(uc_engine* uc, json* j, const std::vector<bool>& vec, const std::string& filename, const std::string& prefix) {
+	auto short_prefix = basename(prefix);
+	auto last_folder  = dirname(prefix);
+
     std::vector<uint8_t> buf;
     uintptr_t base = 0x140000000;
     auto begin     = vec.begin();
@@ -2026,15 +2029,77 @@ void WriteMemoryBitmapAccesses(uc_engine* uc, const std::vector<bool>& vec, cons
             std::string fn = fmt::format("{}_{:x}_{:x}_{}.bin", prefix, start_ea, len, filename);
             buf.resize(len);
             uc_mem_read(uc, start_ea, buf.data(), len);
+			if (j)
+				(*j)[last_folder][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
             //*outs << "Writing to '" << fn << "'\n";
             file_put_contents(spread_filename(smart_path(fn)).string(), (char*)buf.data(), buf.size(), 1);
         }
         it = std::find(end_it, end, true);
     }
 }
+bool tryAndReadJson(const std::string& filename, json& j, json defaultValue) {
+    // Various read-text-from-file implementations from:
+    // http://stackoverflow.com/questions/2602013/read-whole-ascii-file-into-c-stdstring
 
-void WriteMemoryAccesses(std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const std::string& filename, const std::string& prefix) {
+    LOG_DEBUG("tryAndReadJson: \"{}\"", (filename));
+
+    // fspath path = filepath(filename);
+    // path.replace_extension();
+    // std::string filename_noext = filepath(path);
+
+    // std::string found;
+    std::string contents;
+    bool bExists = file_exists(filename);
+	if (bExists) {
+		contents = file_get_contents(filename);
+        if (contents.empty()) {
+            LOG_FUNC("unable to decode or empty: {}", (filename));
+            goto FAIL;
+        }
+        try {
+            j = json::parse(contents.c_str());
+            LOG_FUNC("parsed {}", (filename));
+            return true;
+        } catch (json::parse_error pex) {
+            // (101, m_lexer.get_position(), error_msg));
+            LOG_ERROR(__FUNCTION__ ": json::parse_error reading '{}': {}", (filename), pex.what());
+            goto FAIL;
+        } catch (const json::exception& e) {
+            LOG_ERROR(__FUNCTION__ ": json::exception reading '{}': {}", (filename), e.what());
+            goto FAIL;
+        }
+    }
+    else {
+        LOG_FUNC("file not found: {}", (filename));
+        goto FAIL;
+    }
+FAIL:
+    j = defaultValue;
+    return false;
+}
+
+bool tryAndWriteJson(const std::string& filename, const json& _json) {
+    if (!filename.length()) {
+        LOG_ERROR("tryAndWriteJson called with empty filename");
+        return false;
+    }
+    // LOG_DEBUG("%s: %s", __FUNCTION__, C(fn));
+    // write prettified JSON to another file
+    try {
+        std::ofstream o(filename);
+        o << std::setw(4) << _json << std::endl;
+        return true;
+    } catch (...) {
+        LOG_DEBUG("Couldn't write JSON file: {}", filename);
+        return false;
+    }
+}
+
+void WriteMemoryAccesses(json* j, std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const std::string& filename, const std::string& prefix) {
     if (vec.size()) {
+        auto short_prefix = basename(prefix);
+        auto last_folder  = dirname(prefix);
+
         std::sort(vec.begin(), vec.end(), [](const auto& lhs, const auto& rhs) { return std::get<0>(lhs) < std::get<0>(rhs); });
         auto last = std::unique(vec.begin(), vec.end(), [](const auto& lhs, const auto& rhs) { return std::get<0>(lhs) == std::get<0>(rhs); });
         vec.erase(last, vec.end());
@@ -2058,6 +2123,8 @@ void WriteMemoryAccesses(std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const
                     std::string fn = fmt::format("{}_{:x}_{:x}_{}.bin", prefix, range_start_address, to_write.size(), filename);
                     //*outs << "Writing to '" << fn << "'\n";
                     file_put_contents(spread_filename(fn).string(), (char*)to_write.data(), to_write.size(), 1);
+                    if (j)
+                        (*j)[last_folder][std::to_string(range_start_address)][std::to_string(to_write.size())].push_back(json::array({short_prefix, filename}));
                 }
                 to_write.clear();
                 range_start_address = address;
@@ -2067,6 +2134,13 @@ void WriteMemoryAccesses(std::vector<std::tuple<uintptr_t, uint8_t>>& vec, const
 
             last_address = address;
         }
+        //if (j) {
+        //    std::string json_fn = (dirname(fs::path(prefix)) / "files.json").string();
+        //    if (tryAndWriteJson(json_fn, *j))
+        //        LOG("wrote json: {}", json_fn);
+        //    else
+        //        LOG("didn't write json: {}", json_fn);
+        //}
     }
 }
 
@@ -2266,7 +2340,49 @@ void ResetRegisters(uc_engine* uc, PeEmulation& ctx) {
     uc_reg_write(uc, UC_X86_REG_RSP, &ctx.m_InitReg.Rsp);
 }
 
-void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx) {
+void GetRegisters(uc_engine* uc, CONTEXT& c) {
+    uc_reg_read(uc, UC_X86_REG_RAX, &c.Rax);
+    uc_reg_read(uc, UC_X86_REG_RBX, &c.Rbx);
+    uc_reg_read(uc, UC_X86_REG_RCX, &c.Rcx);
+    uc_reg_read(uc, UC_X86_REG_RDX, &c.Rdx);
+    uc_reg_read(uc, UC_X86_REG_RSI, &c.Rsi);
+    uc_reg_read(uc, UC_X86_REG_RDI, &c.Rdi);
+    uc_reg_read(uc, UC_X86_REG_R8, &c.R8);
+    uc_reg_read(uc, UC_X86_REG_R9, &c.R9);
+    uc_reg_read(uc, UC_X86_REG_R10, &c.R10);
+    uc_reg_read(uc, UC_X86_REG_R11, &c.R11);
+    uc_reg_read(uc, UC_X86_REG_R12, &c.R12);
+    uc_reg_read(uc, UC_X86_REG_R13, &c.R13);
+    uc_reg_read(uc, UC_X86_REG_R14, &c.R14);
+    uc_reg_read(uc, UC_X86_REG_R15, &c.R15);
+    uc_reg_read(uc, UC_X86_REG_RBP, &c.Rbp);
+    uc_reg_read(uc, UC_X86_REG_RSP, &c.Rsp);
+    uc_reg_read(uc, UC_X86_REG_RIP, &c.Rip);
+}
+
+void ShowRegisters(uc_engine* uc) {
+    CONTEXT c;
+    GetRegisters(uc, c);
+    constexpr const char* registers      = "RAX\0RCX\0RDX\0RBX\0RSP\0RBP\0RSI\0RDI\0R8\0\0R9\0\0R10\0R11\0R12\0R13\0R14\0R15\0RIP\0";
+    const uint64_t* p                    = &c.Rax;
+    constexpr auto STACKWALK_MAX_NAMELEN = 1024;
+    CHAR buffer[STACKWALK_MAX_NAMELEN];
+    size_t maxLen = STACKWALK_MAX_NAMELEN;
+#if _MSC_VER >= 1400
+    maxLen = _TRUNCATE;
+#endif
+    // clang-format off
+    _snprintf_s(buffer, maxLen, "RAX: %16llx   RCX: %16llx   RDX: %16llx   RBX: %16llx  ", p[0], p[1], p[2], p[3]); p += 4; buffer[STACKWALK_MAX_NAMELEN - 1] = 0; LOG("{}", buffer);
+    _snprintf_s(buffer, maxLen, "RSP: %16llx   RBP: %16llx   RSI: %16llx   RDI: %16llx  ", p[0], p[1], p[2], p[3]); p += 4; buffer[STACKWALK_MAX_NAMELEN - 1] = 0; LOG("{}", buffer);
+    _snprintf_s(buffer, maxLen, "R8:  %16llx   R9:  %16llx   R10: %16llx   R11: %16llx  ", p[0], p[1], p[2], p[3]); p += 4; buffer[STACKWALK_MAX_NAMELEN - 1] = 0; LOG("{}", buffer);
+    _snprintf_s(buffer, maxLen, "R12: %16llx   R13: %16llx   R14: %16llx   R15: %16llx  ", p[0], p[1], p[2], p[3]); p += 4; buffer[STACKWALK_MAX_NAMELEN - 1] = 0; LOG("{}", buffer);
+    _snprintf_s(buffer, maxLen, "RIP: %16llx", *p); 
+	buffer[STACKWALK_MAX_NAMELEN - 1] = 0; 
+	LOG("{}", buffer);
+    // clang-format on
+}
+
+void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx, json* j) {
     uint64_t result_rsp = 0;
     uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
     *outs << "RSP: 0x" << std::hex << result_rsp << "\n"
@@ -2288,7 +2404,7 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx) {
     LOG("read_path: {}", read_path.string());
 
     if (ctx.m_Unpack) {
-        WriteMemoryBitmapAccesses(uc, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
+        WriteMemoryBitmapAccesses(uc, j, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
     } else {
         uint64_t bytes_written = 0;
         uint64_t bytes_read    = 0;
@@ -2296,9 +2412,9 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx) {
         bytes_written += ctx.m_Written.size();
         bytes_read += ctx.m_Read.size();
         if (!ctx.m_SaveRead.empty())
-            WriteMemoryAccesses(ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
+            WriteMemoryAccesses(nullptr, ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
         if (!ctx.m_SaveWritten.empty())
-            WriteMemoryAccesses(ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
+            WriteMemoryAccesses(j, ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
         *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
     }
     if (ctx.m_Dwords) {
@@ -2839,16 +2955,6 @@ int main(int argc, char** argv) {
         LOG("tmpdir: {}", tmpdir());
     }
 
-    {
-        std::string nasm;
-        if (cmdl("nasm")) {
-            nasm = cmdl("nasm").str();
-            LOG("assembling: {}", nasm);
-            YasmExt yasm(nasm, 0x140001000);
-            yasm.prep();
-        }
-    }
-
     //*outs << "\nValues for all multiple-use parameters:\n";
     //for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
     //    if (cmdl.params(param).size() > 1) {
@@ -2869,7 +2975,7 @@ int main(int argc, char** argv) {
     bool bKernel              = true;
     ctx.m_IsKernel            = cmdl["k"];
     ctx.m_Disassemble         = cmdl["disasm"];
-    ctx.m_Unpack              = cmdl["unpack", "bitmap"];
+    ctx.m_Unpack              = cmdl["unpack"];
     ctx.m_IsPacked            = cmdl["packed"];  // some vmprotect stuff that was already here
     ctx.m_BoundCheck          = cmdl["boundcheck"];
     ctx.m_Dump                = cmdl["save-dump", "dump"];
@@ -2917,19 +3023,6 @@ int main(int argc, char** argv) {
         *outs << "Saving memory reads to " << ctx.m_SaveRead << "\n";
         make_spread_folders(ctx.m_SaveRead);
     }
-    //*outs << "\nValues for all `--ea` parameters:\n";
-    for (auto& param : cmdl.params("start"))  // iterate on all params called "start"
-    {
-        char* errch      = NULL;
-        uintptr_t target = strtoull(param.second.c_str(), &errch, 16);
-        if (*errch != '\0') {
-            *outs << "string couldn't be converted to ll: " << param.second.c_str() << "\n";
-            continue;
-        }
-        *outs << '\t' << param.first << " : " << std::hex << param.second << std::dec << '\n';
-        ctx.m_StartAddresses.emplace_back(target);
-    }
-
     uc_engine* uc = NULL;
     auto err      = uc_open(UC_ARCH_X86, UC_MODE_64, &uc);
     if (err) {
@@ -3059,9 +3152,33 @@ int main(int argc, char** argv) {
 
     std::vector<std::tuple<std::string, uintptr_t>> fns;
     std::vector<std::tuple<std::string, uintptr_t>> balance_fns;
-    if (ctx.m_StartAddresses.size()) {
-        for (uintptr_t ptr : ctx.m_StartAddresses) {
-            fns.emplace_back(fmt::format("start_{:x}", ptr), ptr);
+    {
+        std::string nasm;
+        for (auto& param : cmdl.params("nasm")) {
+            auto st_addr  = string_between("", ":", param.second);
+            auto st_patch = string_between(":", "", param.second);
+            if (st_addr == "image_end")
+                st_addr = fmt::format("{:#x}", ctx.m_ImageEnd);
+            if (auto addr = asQword(st_addr, 16)) {
+                LOG("patching {:#x} with {}", *addr, st_patch);
+                if (pystring::startswith(st_patch, "<")) {
+                    auto fn = pystring::slice(st_patch, 1);
+                    if (!file_exists(fn)) {
+                        LOG("file does not exist: {}", fn);
+                        break;
+                    }
+                    nasm = file_get_contents(fn);
+                } else {
+                    nasm = cmdl("nasm").str();
+                }
+                LOG("assembling: {}", nasm);
+                YasmExt yasm(nasm, *addr);
+                if (yasm.prep()) {
+                    LOG("patching {:#x} with {}", *addr, HexDump::asString(yasm.get_assembled()));
+                    mbs(*addr).memcpy(yasm.get_assembled().data(), yasm.get_assembled().size());
+                }
+            } else
+                LOG("patching: couldn't process {} as an address", st_addr);
         }
     }
 
@@ -3081,6 +3198,8 @@ int main(int argc, char** argv) {
     for (auto& param : cmdl.params("patch")) {
         auto st_addr  = string_between("", ":", param.second);
         auto st_patch = string_between(":", "", param.second);
+        if (st_addr == "image_end")
+            st_addr = fmt::format("{:#x}", ctx.m_ImageEnd);
         if (auto addr = asQword(st_addr, 16)) {
             LOG("patching {:#x} with {}", *addr, st_patch);
             mbs(*addr).write_pattern(st_patch.c_str());
@@ -3120,6 +3239,30 @@ int main(int argc, char** argv) {
         }
     }
 
+    //*outs << "\nValues for all `--ea` parameters:\n";
+    for (auto& param : cmdl.params("start"))  // iterate on all params called "start"
+    {
+        if (param.second == "image_end") {
+            ctx.m_StartAddresses.emplace_back(ctx.m_ImageEnd);
+            continue;
+        }
+
+        char* errch      = NULL;
+        uintptr_t target = strtoull(param.second.c_str(), &errch, 16);
+        if (*errch != '\0') {
+            *outs << "string couldn't be converted to ll: " << param.second.c_str() << "\n";
+            continue;
+        }
+        *outs << '\t' << param.first << " : " << std::hex << param.second << std::dec << '\n';
+        ctx.m_StartAddresses.emplace_back(target);
+    }
+
+    if (ctx.m_StartAddresses.size()) {
+        for (uintptr_t ptr : ctx.m_StartAddresses) {
+            fns.emplace_back(fmt::format("start_{:x}", ptr), ptr);
+        }
+    }
+
     if (ctx.m_FindBalance) {
         virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
         uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
@@ -3128,7 +3271,6 @@ int main(int argc, char** argv) {
 
         auto normalise_base = [&](uintptr_t ea) {
             return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
-            // return ea - (uintptr_t)imagebuf.GetBuffer() + 0x140000000;
         };
         auto m_normalise_base = [&](mem::pointer& ea) {
             return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
@@ -3346,6 +3488,7 @@ int main(int argc, char** argv) {
         *outs << "Found " << fns.size() << " matching functions\n";
     }
     if (ctx.m_Unpack) {
+        json json_written;
         uintptr_t dst = ctx.m_ExecuteFromRip;
 
 #ifdef USE_BOOST
@@ -3635,8 +3778,12 @@ int main(int argc, char** argv) {
             break;
         }
         uintptr_t fn_address = 0x140CBC8B1;
-        SaveResult(uc, fn_address, ctx);
+		SaveResult(uc, fn_address, ctx, &json_written);
     } else {
+        json json_written;
+        if (!ctx.m_SaveWritten.empty()) {
+            tryAndReadJson((fs::path(ctx.m_SaveWritten) / "files.json").string(), json_written, {});
+        }
         for (const auto& tpl : fns) {
             ctx.filename                     = std::get<0>(tpl);
             uintptr_t start_address          = std::get<1>(tpl);
@@ -3660,7 +3807,7 @@ int main(int argc, char** argv) {
                 }
             }
             uintptr_t fn_address = std::get<1>(tpl);
-            SaveResult(uc, fn_address, ctx);
+            SaveResult(uc, fn_address, ctx, &json_written);
         }
         for (const auto& tpl : balance_fns) {
             ctx.filename                     = std::get<0>(tpl);
@@ -3691,7 +3838,10 @@ int main(int argc, char** argv) {
             uintptr_t fn_address = std::get<1>(tpl);
             if (ctx.m_BalanceEntry)
                 fn_address = ctx.m_BalanceEntry;
-            SaveResult(uc, fn_address, ctx);
+            SaveResult(uc, fn_address, ctx, &json_written);
+        }
+        if (!ctx.m_SaveWritten.empty()) {
+            tryAndWriteJson((fs::path(ctx.m_SaveWritten) / "files.json").string(), json_written);
         }
     }
 
@@ -3705,6 +3855,8 @@ int main(int argc, char** argv) {
     if (ctx.m_Dump) {
         ImageDump(ctx, uc, filename);
     }
+
+    ShowRegisters(uc);
 
     *outs << "uc_emu_start return: " << std::dec << err << std::endl;
     *outs << "entrypoint return: " << std::hex << result_rax << std::endl;

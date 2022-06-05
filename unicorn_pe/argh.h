@@ -102,12 +102,12 @@ namespace argh {
 
         void parse(const char* const argv[], int mode = PREFER_FLAG_FOR_UNREG_OPTION);
         void parse(int argc, const char* const argv[], int mode = PREFER_FLAG_FOR_UNREG_OPTION);
-        void parse(const std::vector<std::string>& argv, int mode);
+        void parse(const std::vector<std::string>& argv, int mode = PREFER_FLAG_FOR_UNREG_OPTION);
 
         std::multiset<std::string> const& flags() const { return flags_; }
         std::multimap<std::string, std::string> const& params() const { return params_; }
         multimap_iteration_wrapper params(std::string const& name) const;
-		std::vector<std::pair<std::string, std::string>> params(std::initializer_list<char const* const> init_list) const;
+        std::vector<std::pair<std::string, std::string>> params(std::initializer_list<char const* const> init_list) const;
         std::vector<std::string> const& pos_args() const { return pos_args_; }
 
         // begin() and end() for using range-for over positional args.
@@ -200,12 +200,12 @@ namespace argh {
         params_.clear();
         pos_args_.clear();
 
-		// argv_ = [item for sublist in [expand(x) for x in args] for item in sublist]
+        // argv_ = [item for sublist in [expand(x) for x in args] for item in sublist]
 
-		std::for_each(std::begin(argv), std::end(argv), [&](const std::string& a) {
+        std::for_each(std::begin(argv), std::end(argv), [&](const std::string& a) {
             auto expanded = sfinktah::string::brace_expander::expand(a);
-			args_.insert(std::end(args_), std::begin(expanded), std::end(expanded));
-		});
+            args_.insert(std::end(args_), std::begin(expanded), std::end(expanded));
+        });
         // parse line
         for (auto i = 0u; i < args_.size(); ++i) {
             if (!is_option(args_[i])) {
@@ -331,6 +331,7 @@ namespace argh {
     //////////////////////////////////////////////////////////////////////////
 
     inline bool parser::operator[](std::initializer_list<char const* const> init_list) const {
+        LOG("argh [] init_list");
         return std::any_of(init_list.begin(), init_list.end(), [&](char const* const name) { return got_flag(name); });
     }
 

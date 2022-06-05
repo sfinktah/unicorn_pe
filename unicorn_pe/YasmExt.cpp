@@ -18,8 +18,8 @@
 std::string YasmExt::get_error() {
     return "";
 }
-std::vector<uint8_t> YasmExt::get_assembled() {
-    return {};
+const std::vector<uint8_t>& YasmExt::get_assembled() const {
+    return assembled;
 }
 
 bool YasmExt::prep() {
@@ -65,7 +65,7 @@ bool YasmExt::prep() {
         if (result && file_exists(objFile)) {
             auto o = file_get_contents_bin(objFile);
             if (auto length = o.size()) {
-                auto assembled = _::slice(o, shift);
+                assembled = _::slice(o, shift);
                 HexDump::dumpBytesAsHex(*outs, assembled);
                 *outs << std::endl;
             }

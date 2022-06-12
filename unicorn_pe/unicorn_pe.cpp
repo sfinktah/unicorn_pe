@@ -2013,8 +2013,8 @@ void PeEmulation::FlushMemMapping(void) {
     }
 }
 void WriteMemoryBitmapAccesses(uc_engine* uc, json* j, const std::vector<bool>& vec, const std::string& filename, const std::string& prefix) {
-	auto short_prefix = basename(prefix);
-	auto last_folder  = dirname(prefix);
+    auto short_prefix = basename(prefix);
+    auto last_folder  = dirname(prefix);
 
     std::vector<uint8_t> buf;
     uintptr_t base = 0x140000000;
@@ -2029,8 +2029,8 @@ void WriteMemoryBitmapAccesses(uc_engine* uc, json* j, const std::vector<bool>& 
             std::string fn = fmt::format("{}_{:x}_{:x}_{}.bin", prefix, start_ea, len, filename);
             buf.resize(len);
             uc_mem_read(uc, start_ea, buf.data(), len);
-			if (j)
-				(*j)[last_folder][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
+            if (j)
+                (*j)[last_folder][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
             //*outs << "Writing to '" << fn << "'\n";
             file_put_contents(spread_filename(smart_path(fn)).string(), (char*)buf.data(), buf.size(), 1);
         }
@@ -2050,8 +2050,8 @@ bool tryAndReadJson(const std::string& filename, json& j, json defaultValue) {
     // std::string found;
     std::string contents;
     bool bExists = file_exists(filename);
-	if (bExists) {
-		contents = file_get_contents(filename);
+    if (bExists) {
+        contents = file_get_contents(filename);
         if (contents.empty()) {
             LOG_FUNC("unable to decode or empty: {}", (filename));
             goto FAIL;
@@ -2068,8 +2068,7 @@ bool tryAndReadJson(const std::string& filename, json& j, json defaultValue) {
             LOG_ERROR(__FUNCTION__ ": json::exception reading '{}': {}", (filename), e.what());
             goto FAIL;
         }
-    }
-    else {
+    } else {
         LOG_FUNC("file not found: {}", (filename));
         goto FAIL;
     }
@@ -2399,7 +2398,7 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx, json* j) 
     fs::path read_path(ctx.m_SaveRead);
     fs::path written_path(ctx.m_SaveWritten);
 
-    read_path /= read_path / "read";
+    read_path = read_path / "read";
     written_path = written_path / "written";
     LOG("read_path: {}", read_path.string());
 
@@ -2978,9 +2977,9 @@ int main(int argc, char** argv) {
     ctx.m_Unpack              = cmdl["unpack"];
     ctx.m_IsPacked            = cmdl["packed"];  // some vmprotect stuff that was already here
     ctx.m_BoundCheck          = cmdl["boundcheck"];
-    ctx.m_Dump                = cmdl["save-dump", "dump"];
-    ctx.m_FindChecks          = cmdl["decrypt", "find"];
-    ctx.m_FindBalance         = cmdl["find-balance"];
+    ctx.m_Dump                = cmdl[{"save-dump", "dump"}];
+    ctx.m_FindChecks          = cmdl["find"];
+    ctx.m_FindBalance         = cmdl[{"decrypt", "find-balance"}];
     ctx.m_SkipSecondCall      = cmdl["skip-second-call"];
     ctx.m_SkipFourthCall      = cmdl["skip-4th-call"];
     ctx.m_Obfu                = cmdl["obfu"];
@@ -3778,7 +3777,7 @@ int main(int argc, char** argv) {
             break;
         }
         uintptr_t fn_address = 0x140CBC8B1;
-		SaveResult(uc, fn_address, ctx, &json_written);
+        SaveResult(uc, fn_address, ctx, &json_written);
     } else {
         json json_written;
         if (!ctx.m_SaveWritten.empty()) {

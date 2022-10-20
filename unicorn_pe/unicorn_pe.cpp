@@ -89,11 +89,7 @@ RtlImageNtHeader(IN PVOID BaseAddress);
 NTSYSAPI
 PVOID
 NTAPI
-RtlImageDirectoryEntryToData(
-    PVOID BaseAddress,
-    BOOLEAN MappedAsImage,
-    USHORT Directory,
-    PULONG Size);
+RtlImageDirectoryEntryToData(PVOID BaseAddress, BOOLEAN MappedAsImage, USHORT Directory, PULONG Size);
 }
 
 void* patch_nops(void* ptr, size_t count);
@@ -102,9 +98,7 @@ bool EmuReadNullTermUnicodeString(uc_engine* uc, uint64_t address, std::wstring&
 bool EmuReadNullTermString(uc_engine* uc, uint64_t address, std::string& str);
 void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT, argh::parser&);
 
-static ULONG ExtractEntryPointRva(PVOID ModuleBase) {
-    return RtlImageNtHeader(ModuleBase)->OptionalHeader.AddressOfEntryPoint;
-}
+static ULONG ExtractEntryPointRva(PVOID ModuleBase) { return RtlImageNtHeader(ModuleBase)->OptionalHeader.AddressOfEntryPoint; }
 std::map<uint64_t, std::string> megaFuncNames;
 
 template <typename Container>
@@ -116,36 +110,25 @@ uc_err uc_mem_write(uc_engine* uc, uint64_t address, const Container& obj) {
 
 uintptr_t PreManualMapCallback(int type, blackbone::pe::PEImage& peImage, const void* data) {
     if (type == 0) {
-        auto ntheader = (PIMAGE_NT_HEADERS)RtlImageNtHeader(peImage._pFileBase);
+        auto ntheader = RtlImageNtHeader(peImage._pFileBase);
 
         DWORD SectionAlignment;
 
         if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
-            auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
+            auto ntheader64  = ntheader;
             SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
         } else {
             SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
         }
 
-        auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
-                                                     sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
+        auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) + sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
 
         auto correct_size = ntheader->OptionalHeader.BaseOfCode;
 
         for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
-            auto SectionSize = (DWORD)ALIGN_UP_MIN1(
-                std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
-                SectionAlignment);
+            auto SectionSize = ALIGN_UP_MIN1(std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData), SectionAlignment);
 
-            *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
-                                 SectionHeader[i].Name,
-                                 SectionHeader[i].Misc.VirtualSize,
-                                 SectionSize,
-                                 SectionHeader[i].VirtualAddress,
-                                 correct_size,
-                                 SectionHeader[i].SizeOfRawData,
-                                 SectionHeader[i].PointerToRawData)
-                  << "\n";
+            *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}", SectionHeader[i].Name, SectionHeader[i].Misc.VirtualSize, SectionSize, SectionHeader[i].VirtualAddress, correct_size, SectionHeader[i].SizeOfRawData, SectionHeader[i].PointerToRawData) << "\n";
 
             correct_size += SectionSize;
         }
@@ -155,18 +138,18 @@ uintptr_t PreManualMapCallback(int type, blackbone::pe::PEImage& peImage, const 
 
         peImage._imgSize = correct_size; /*PAGE_ALIGN_UP(peImage._imgSize);*/
                                          // disable DYNAMIC_BASE stop us rebase the image (even to it's original location)
-        //peImage._DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+        // peImage._DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
 
         //*outs << "SectionSize: " << std::hex << PeEmulation::RebuildSectionSizes(peImage._pFileBase, 0) << "\n";
-        //auto hdr2 = peImage._pImageHdr64;
-        //blackbone::pe::PEImage::PCHDR64 hdr = data;
-        //peImage._imgBase            = pImageHeader->OptionalHeader.ImageBase;
-        //peImage._imgSize            = pImageHeader->OptionalHeader.SizeOfImage;
-        //peImage._hdrSize            = pImageHeader->OptionalHeader.SizeOfHeaders;
-        //peImage._epRVA              = pImageHeader->OptionalHeader.AddressOfEntryPoint;
-        //peImage._subsystem          = pImageHeader->OptionalHeader.Subsystem;
-        //peImage._DllCharacteristics = pImageHeader->OptionalHeader.DllCharacteristics;
-        //peImage._imgSize = 0x3ed4000;
+        // auto hdr2 = peImage._pImageHdr64;
+        // blackbone::pe::PEImage::PCHDR64 hdr = data;
+        // peImage._imgBase            = pImageHeader->OptionalHeader.ImageBase;
+        // peImage._imgSize            = pImageHeader->OptionalHeader.SizeOfImage;
+        // peImage._hdrSize            = pImageHeader->OptionalHeader.SizeOfHeaders;
+        // peImage._epRVA              = pImageHeader->OptionalHeader.AddressOfEntryPoint;
+        // peImage._subsystem          = pImageHeader->OptionalHeader.Subsystem;
+        // peImage._DllCharacteristics = pImageHeader->OptionalHeader.DllCharacteristics;
+        // peImage._imgSize = 0x3ed4000;
     }
     return 0;
 };
@@ -175,7 +158,7 @@ blackbone::LoadData ManualMapCallback(blackbone::CallbackType type, void* contex
     PeEmulation* ctx = (PeEmulation*)context;
     if (type == blackbone::PreCallback) {
         uint64_t desiredBase         = ctx->m_LoadModuleBase;
-        uint64_t desiredNextLoadBase = PAGE_ALIGN_64k((uint64_t)ctx->m_LoadModuleBase + (uint64_t)modInfo.size + 0x10000ull);
+        uint64_t desiredNextLoadBase = PAGE_ALIGN_64k(ctx->m_LoadModuleBase + (uint64_t)modInfo.size + 0x10000ull);
         ctx->m_LoadModuleBase        = desiredNextLoadBase;
 
         return blackbone::LoadData(blackbone::MT_Default, blackbone::Ldr_None, ctx->m_LoadModuleBase);
@@ -185,23 +168,22 @@ blackbone::LoadData ManualMapCallback(blackbone::CallbackType type, void* contex
         //*outs << "ManualMapCallback: " << fmt::format("{} {:x} {:x} {:x}", narrow(modInfo.name), (ULONG64)modInfo.imgPtr, modInfo.size, modInfo.baseAddress)
         //      << "\n";
         if (pystring::endswith(narrow(modInfo.name), ".exe")) {
-            //HexDump::dumpMemory(*outs, (char*)modInfo.imgPtr, 256);
+            // HexDump::dumpMemory(*outs, (char*)modInfo.imgPtr, 256);
         }
-        ctx->MapImageToEngine(modInfo.name, (PVOID)modInfo.imgPtr, modInfo.size, modInfo.baseAddress,
-                              (ULONG64)modInfo.baseAddress + ExtractEntryPointRva((PVOID)modInfo.imgPtr));
+        ctx->MapImageToEngine(modInfo.name, (PVOID)modInfo.imgPtr, modInfo.size, modInfo.baseAddress, (ULONG64)modInfo.baseAddress + ExtractEntryPointRva((PVOID)modInfo.imgPtr));
     } else if (type == blackbone::ImageCallback) {  // Called after actually reading image file, but before image loading.
-                                                    //ModuleData tmpData;
-                                                    //tmpData.baseAddress = 0;
-                                                    //tmpData.manual = ((pImage->flags & ManualImports) != 0);
-                                                    //tmpData.fullPath = path;
-                                                    //tmpData.name = Utils::ToLower(Utils::StripPath(path));
-                                                    //tmpData.size = pImage->peImage.imageSize();
-                                                    //tmpData.type = pImage->peImage.mType();
-                                                    //tmpData.entryPoint = 0;
-                                                    //tmpData.ldrPtr = 0;
-                                                    //tmpData.imgPtr = pImage->imgMem.ptr();
-                                                    //ManualMapCallback: ImageCallback xxx - original - 323.1 - cff.exe 0 3ed4000 0
-                                                    //ManualMapCallback: ImageCallback xxx-original-323.1.exe           0 3ed3c00 0
+                                                    // ModuleData tmpData;
+                                                    // tmpData.baseAddress = 0;
+                                                    // tmpData.manual = ((pImage->flags & ManualImports) != 0);
+                                                    // tmpData.fullPath = path;
+                                                    // tmpData.name = Utils::ToLower(Utils::StripPath(path));
+                                                    // tmpData.size = pImage->peImage.imageSize();
+                                                    // tmpData.type = pImage->peImage.mType();
+                                                    // tmpData.entryPoint = 0;
+                                                    // tmpData.ldrPtr = 0;
+                                                    // tmpData.imgPtr = pImage->imgMem.ptr();
+                                                    // ManualMapCallback: ImageCallback xxx - original - 323.1 - cff.exe 0 3ed4000 0
+                                                    // ManualMapCallback: ImageCallback xxx-original-323.1.exe           0 3ed3c00 0
         //*outs << "ManualMapCallback: ImageCallback" << fmt::format("{} {:x} {:x} {:x}", narrow(modInfo.name), (ULONG64)modInfo.imgPtr, modInfo.size, modInfo.baseAddress)
         //      << "\n";
     }
@@ -220,14 +202,14 @@ void PeEmulation::AddAPIEmulation(FakeAPI_t* r, void* callback, int argsCount) {
 }
 
 bool PeEmulation::RegisterAPIEmulation(const std::wstring& DllName, const char* ProcedureName, void* callback, int argsCount) {
-    FakeAPI_t* r = NULL;
+    FakeAPI_t* r = nullptr;
     for (size_t i = 0; i < m_FakeModules.size(); ++i) {
         auto& m = m_FakeModules[i];
         if (!_wcsicmp(m->DllName.c_str(), DllName.c_str())) {
             for (size_t j = 0; j < m->FakeAPIs.size(); ++j) {
                 if (m->FakeAPIs[j].ProcedureName == ProcedureName) {
                     AddAPIEmulation(&m->FakeAPIs[j], callback, argsCount);
-                    //LOG("registered API emulation for {} in {} at {:#x}", ProcedureName, narrow(m->DllName), m->FakeAPIs[j].VirtualAddress);
+                    // LOG("registered API emulation for {} in {} at {:#x}", ProcedureName, narrow(m->DllName), m->FakeAPIs[j].VirtualAddress);
                     return true;
                 }
             }
@@ -337,7 +319,7 @@ bool PeEmulation::FindAPIByAddress(ULONG64 address, std::wstring& DllName, FakeA
 
     // well that shit didn't work, lets do it the old fashioned way
 
-    FakeAPI_t* r = NULL;
+    FakeAPI_t* r = nullptr;
     for (size_t i = 0; i < m_FakeModules.size(); ++i) {
         auto& m = m_FakeModules[i];
         for (size_t j = 0; j < m->FakeAPIs.size(); ++j) {
@@ -417,13 +399,11 @@ ULONG64 PeEmulation::LdrGetProcAddress(ULONG64 ImageBase, const char* ProcedureN
 
 VOID PeEmulation::LdrResolveExportTable(FakeModule_t* module, PVOID ImageBase, ULONG64 MappedBase) {
     DWORD uExportSize                             = 0;
-    PIMAGE_EXPORT_DIRECTORY pImageExportDirectory = (PIMAGE_EXPORT_DIRECTORY)
-        RtlImageDirectoryEntryToData(ImageBase, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &uExportSize);
+    PIMAGE_EXPORT_DIRECTORY pImageExportDirectory = (PIMAGE_EXPORT_DIRECTORY)RtlImageDirectoryEntryToData(ImageBase, TRUE, IMAGE_DIRECTORY_ENTRY_EXPORT, &uExportSize);
 
-    if (!pImageExportDirectory)
-        return;
+    if (!pImageExportDirectory) return;
 
-    DWORD dwNumberOfNames        = (DWORD)(pImageExportDirectory->NumberOfNames);
+    DWORD dwNumberOfNames        = pImageExportDirectory->NumberOfNames;
     DWORD* pAddressOfFunction    = (DWORD*)((PUCHAR)ImageBase + pImageExportDirectory->AddressOfFunctions);
     DWORD* pAddressOfNames       = (DWORD*)((PUCHAR)ImageBase + pImageExportDirectory->AddressOfNames);
     WORD* pAddressOfNameOrdinals = (WORD*)((PUCHAR)ImageBase + pImageExportDirectory->AddressOfNameOrdinals);
@@ -432,9 +412,8 @@ VOID PeEmulation::LdrResolveExportTable(FakeModule_t* module, PVOID ImageBase, U
         char* strFunction = (char*)((PUCHAR)ImageBase + pAddressOfNames[i]);
 
         DWORD functionRva = pAddressOfFunction[pAddressOfNameOrdinals[i]];
-        //forward
-        if ((PUCHAR)ImageBase + functionRva >= (PUCHAR)pImageExportDirectory &&
-            (PUCHAR)ImageBase + functionRva < (PUCHAR)pImageExportDirectory + uExportSize) {
+        // forward
+        if ((PUCHAR)ImageBase + functionRva >= (PUCHAR)pImageExportDirectory && (PUCHAR)ImageBase + functionRva < (PUCHAR)pImageExportDirectory + uExportSize) {
             char* strForward         = (char*)ImageBase + functionRva;
             char* strForwardFunction = strchr(strForward, '.');
             if (strForwardFunction) {
@@ -446,8 +425,7 @@ VOID PeEmulation::LdrResolveExportTable(FakeModule_t* module, PVOID ImageBase, U
                 ANSIToUnicode(strForwardDll, wszForwardDll);
                 if (NT_SUCCESS(LdrFindDllByName(wszForwardDll, &ForwardDllBase, NULL, true))) {
                     ULONG64 ForwardFunction = LdrGetProcAddress(ForwardDllBase, strForwardFunction + 1);
-                    if (ForwardFunction)
-                        module->FakeAPIs.emplace_back(strFunction, ForwardFunction);
+                    if (ForwardFunction) module->FakeAPIs.emplace_back(strFunction, ForwardFunction);
                 }
             }
         } else {
@@ -476,16 +454,13 @@ NTSTATUS PeEmulation::LdrFindDllByName(const std::wstring& DllName, ULONG64* Ima
     auto moduleptr = thisProc.modules().GetModule(newDllName, blackbone::eModSeachType::PEHeaders, mt_default);
 
     if (moduleptr) {
-        if (ImageBase)
-            *ImageBase = moduleptr->baseAddress;
-        if (ImageSize)
-            *ImageSize = moduleptr->size;
+        if (ImageBase) *ImageBase = moduleptr->baseAddress;
+        if (ImageSize) *ImageSize = moduleptr->size;
 
         return STATUS_SUCCESS;
     }
 
-    if (LoadIfNotExist)
-        return LdrLoadDllByName(newDllName, ImageBase, ImageSize);
+    if (LoadIfNotExist) return LdrLoadDllByName(newDllName, ImageBase, ImageSize);
 
     return STATUS_OBJECT_NAME_NOT_FOUND;
 }
@@ -493,12 +468,10 @@ NTSTATUS PeEmulation::LdrFindDllByName(const std::wstring& DllName, ULONG64* Ima
 NTSTATUS PeEmulation::LdrLoadDllByName(const std::wstring& DllName, ULONG64* ImageBase, ULONG* ImageSize) {
     using namespace blackbone;
 
-    auto MapResult = thisProc.mmap().MapImage(DllName,
-                                              ManualImports | NoSxS | NoDelayLoad | NoExceptions | NoTLS | NoExceptions,
-                                              ManualMapCallback, this);
+    auto MapResult = thisProc.mmap().MapImage(DllName, ManualImports | NoSxS | NoDelayLoad | NoExceptions | NoTLS | NoExceptions, ManualMapCallback, this);
 
     if (!MapResult.success()) {
-        //printf("LdrLoadDllByName failed to MapImage %ws, status %08X\n", DllName.c_str(), MapResult.status);
+        // printf("LdrLoadDllByName failed to MapImage %ws, status %08X\n", DllName.c_str(), MapResult.status);
         return MapResult.status;
     }
 
@@ -528,10 +501,7 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
     else if (!_wcsicmp(ImageName.c_str(), L"hal.dll"))
         mod->Priority = 99;
 
-    auto ExceptionTable = RtlImageDirectoryEntryToData(ImageBase,
-                                                       TRUE,
-                                                       IMAGE_DIRECTORY_ENTRY_EXCEPTION,
-                                                       &mod->ExceptionTableSize);
+    auto ExceptionTable = RtlImageDirectoryEntryToData(ImageBase, TRUE, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &mod->ExceptionTableSize);
 
     mod->ExceptionTable = MappedBase + ((PUCHAR)ExceptionTable - (PUCHAR)ImageBase);
 
@@ -541,11 +511,11 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
 
     LdrResolveExportTable(mod, ImageBase, MappedBase);
 
-    uint64_t image_base = (uint64_t)MappedBase;
+    uint64_t image_base = MappedBase;
     uint64_t image_end  = PAGE_ALIGN_64(image_base + ImageSize);
 
     if (image_end != image_base)
-        uc_mem_map(m_uc, image_base, (size_t)(image_end - image_base), UC_PROT_READ);
+        uc_mem_map(m_uc, image_base, image_end - image_base, UC_PROT_READ);
     else
         uc_mem_map(m_uc, image_base, PAGE_SIZE, UC_PROT_READ);
 
@@ -561,8 +531,7 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
         unsigned int i;                // [rsp+3Ch] [rbp+1Ch]
 
         fhead = Get_IMAGE_FILE_HEADER((IMAGE_DOS_HEADER*)buf.GetBuffer());
-        if (!fhead)
-            return;
+        if (!fhead) return;
         ohead = Get_IMAGE_OPTIONAL_HEADER(fhead);
         shead = (IMAGE_SECTION_HEADER*)&ohead->DataDirectory[ohead->NumberOfRvaAndSizes];
         i     = 0;
@@ -570,105 +539,104 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
             auto& size    = shead->Misc.VirtualSize;
             auto old_size = size;
             size          = PAGE_ALIGN_UP_MIN1(size);
-            //if (size != old_size) {
+            // if (size != old_size) {
             //    *outs << fmt::format("{:16} VirtualSize {:8x} -> {:8x}\n", shead->Name, old_size, size);
             //} else
             //    *outs << fmt::format("{:16} VirtualSize {:8x}\n", shead->Name, old_size);
             ++shead;
         }
-        //uc_mem_write(m_uc, image_base, buf.GetBuffer(), ImageSize);
+        // uc_mem_write(m_uc, image_base, buf.GetBuffer(), ImageSize);
     } else {
-        //uc_mem_write(m_uc, image_base, ImageBase, ImageSize);
+        // uc_mem_write(m_uc, image_base, ImageBase, ImageSize);
     }
     uc_mem_write(m_uc, image_base, ImageBase, ImageSize);
 
-    auto ntheader = (PIMAGE_NT_HEADERS)RtlImageNtHeader(ImageBase);
+    auto ntheader = RtlImageNtHeader(ImageBase);
 
     DWORD SectionAlignment;
 
     if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
-        auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
+        auto ntheader64  = ntheader;
         SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
     } else {
         SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
     }
 
-    auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
-                                                 sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
+    auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) + sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
 
-    //xxx-original-323.1.exe          .text     1717c00     1000  1717c00      600
-    //xxx-original-323.1.exe          BINK          c00  1719000      c00  1718200
-    //xxx-original-323.1.exe          BINKBSS        60  171a000        0        0
-    //xxx-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
-    //xxx-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
-    //xxx-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
-    //xxx-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
-    //xxx-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
-    //xxx-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
-    //xxx-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
-    //xxx-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
+    // xxx-original-323.1.exe          .text     1717c00     1000  1717c00      600
+    // xxx-original-323.1.exe          BINK          c00  1719000      c00  1718200
+    // xxx-original-323.1.exe          BINKBSS        60  171a000        0        0
+    // xxx-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
+    // xxx-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
+    // xxx-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
+    // xxx-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
+    // xxx-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
+    // xxx-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
+    // xxx-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
+    // xxx-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
     //.text            VirtualSize  1717c00 ->  1718000
-    //BINK             VirtualSize      c00 ->     1000
-    //BINKBSS          VirtualSize       60 ->     1000
+    // BINK             VirtualSize      c00 ->     1000
+    // BINKBSS          VirtualSize       60 ->     1000
     //.rdata           VirtualSize   369800 ->   36a000
     //.data            VirtualSize   ffa4e8 ->   ffb000
     //.pdata           VirtualSize    f1000
     //.tls             VirtualSize      a00 ->     1000
-    //BINKCONS         VirtualSize      200 ->     1000
+    // BINKCONS         VirtualSize      200 ->     1000
     //.rsrc            VirtualSize    2de00 ->    2e000
     //.reloc           VirtualSize    d5600 ->    d6000
     //.text            VirtualSize  125cc00 ->  125d000
-    //xxx-original-323.1.exe          .text     1717c00     1000  1717c00      600
-    //xxx-original-323.1.exe          BINK          c00  1719000      c00  1718200
-    //xxx-original-323.1.exe          BINKBSS        60  171a000        0        0
-    //xxx-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
-    //xxx-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
-    //xxx-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
-    //xxx-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
-    //xxx-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
-    //xxx-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
-    //xxx-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
-    //xxx-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
+    // xxx-original-323.1.exe          .text     1717c00     1000  1717c00      600
+    // xxx-original-323.1.exe          BINK          c00  1719000      c00  1718200
+    // xxx-original-323.1.exe          BINKBSS        60  171a000        0        0
+    // xxx-original-323.1.exe          .rdata     369800  171b000   369800  1718e00
+    // xxx-original-323.1.exe          .data      ffa4e8  1a85000   20a000  1a82600
+    // xxx-original-323.1.exe          .pdata      f1000  2a80000    f1000  1c8c600
+    // xxx-original-323.1.exe          .tls          a00  2b71000      a00  1d7d600
+    // xxx-original-323.1.exe          BINKCONS      200  2b72000      200  1d7e000
+    // xxx-original-323.1.exe          .rsrc       2de00  2b73000    2de00  1d7e200
+    // xxx-original-323.1.exe          .reloc      d5600  2ba1000    d5600  1dac000
+    // xxx-original-323.1.exe          .text     125cc00  2c77000  125cc00  1e81600
 
     //                                 Name      VirtualSize         VirtualAddresss     RawSize  RawAddr
-    //xxx-original-323.1-cff.exe      .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600 + 1717c00
-    //xxx-original-323.1-cff.exe      BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200 +    1e00 -.
-    //xxx-original-323.1-cff.exe      BINKBSS      1000 [    1000]  171a000 [ 171a000]     1000  171a000 -   -1200  '
-    //xxx-original-323.1-cff.exe      .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00 +     c00 -'
-    //xxx-original-323.1-cff.exe      .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
-    //xxx-original-323.1-cff.exe      .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
-    //xxx-original-323.1-cff.exe      .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
-    //xxx-original-323.1-cff.exe      BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
-    //xxx-original-323.1-cff.exe      .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
-    //xxx-original-323.1-cff.exe      .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
-    //xxx-original-323.1-cff.exe      .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
+    // xxx-original-323.1-cff.exe      .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600 + 1717c00
+    // xxx-original-323.1-cff.exe      BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200 +    1e00 -.
+    // xxx-original-323.1-cff.exe      BINKBSS      1000 [    1000]  171a000 [ 171a000]     1000  171a000 -   -1200  '
+    // xxx-original-323.1-cff.exe      .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00 +     c00 -'
+    // xxx-original-323.1-cff.exe      .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
+    // xxx-original-323.1-cff.exe      .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
+    // xxx-original-323.1-cff.exe      .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
+    // xxx-original-323.1-cff.exe      BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
+    // xxx-original-323.1-cff.exe      .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
+    // xxx-original-323.1-cff.exe      .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
+    // xxx-original-323.1-cff.exe      .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
 
-    //xxx-original-323.1.exe          .text     1717c00 [ 1718000]     1000 [    1000]  1717c00      600
-    //xxx-original-323.1.exe          BINK          c00 [    1000]  1719000 [ 1719000]      c00  1718200
-    //xxx-original-323.1.exe          BINKBSS        60 [    1000]  171a000 [ 171a000]        0        0
-    //xxx-original-323.1.exe          .rdata     369800 [  36a000]  171b000 [ 171b000]   369800  1718e00
-    //xxx-original-323.1.exe          .data      ffa4e8 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
-    //xxx-original-323.1.exe          .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
-    //xxx-original-323.1.exe          .tls          a00 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
-    //xxx-original-323.1.exe          BINKCONS      200 [    1000]  2b72000 [ 2b72000]      200  1d7e000
-    //xxx-original-323.1.exe          .rsrc       2de00 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
-    //xxx-original-323.1.exe          .reloc      d5600 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
-    //xxx-original-323.1.exe          .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
+    // xxx-original-323.1.exe          .text     1717c00 [ 1718000]     1000 [    1000]  1717c00      600
+    // xxx-original-323.1.exe          BINK          c00 [    1000]  1719000 [ 1719000]      c00  1718200
+    // xxx-original-323.1.exe          BINKBSS        60 [    1000]  171a000 [ 171a000]        0        0
+    // xxx-original-323.1.exe          .rdata     369800 [  36a000]  171b000 [ 171b000]   369800  1718e00
+    // xxx-original-323.1.exe          .data      ffa4e8 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
+    // xxx-original-323.1.exe          .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
+    // xxx-original-323.1.exe          .tls          a00 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
+    // xxx-original-323.1.exe          BINKCONS      200 [    1000]  2b72000 [ 2b72000]      200  1d7e000
+    // xxx-original-323.1.exe          .rsrc       2de00 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
+    // xxx-original-323.1.exe          .reloc      d5600 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
+    // xxx-original-323.1.exe          .text     125cc00 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
 
-    //xxx-original-323.1-scylla-fixed .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600
-    //xxx-original-323.1-scylla-fixed BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200
-    //xxx-original-323.1-scylla-fixed BINKBSS      1000 [    1000]  171a000 [ 171a000]        0        0
-    //xxx-original-323.1-scylla-fixed .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00
-    //xxx-original-323.1-scylla-fixed .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
-    //xxx-original-323.1-scylla-fixed .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
-    //xxx-original-323.1-scylla-fixed .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
-    //xxx-original-323.1-scylla-fixed BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
-    //xxx-original-323.1-scylla-fixed .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
-    //xxx-original-323.1-scylla-fixed .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
-    //xxx-original-323.1-scylla-fixed .text     125d000 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
+    // xxx-original-323.1-scylla-fixed .text     1718000 [ 1718000]     1000 [    1000]  1717c00      600
+    // xxx-original-323.1-scylla-fixed BINK         1000 [    1000]  1719000 [ 1719000]      c00  1718200
+    // xxx-original-323.1-scylla-fixed BINKBSS      1000 [    1000]  171a000 [ 171a000]        0        0
+    // xxx-original-323.1-scylla-fixed .rdata     36a000 [  36a000]  171b000 [ 171b000]   369800  1718e00
+    // xxx-original-323.1-scylla-fixed .data      ffb000 [  ffb000]  1a85000 [ 1a85000]   20a000  1a82600
+    // xxx-original-323.1-scylla-fixed .pdata      f1000 [   f1000]  2a80000 [ 2a80000]    f1000  1c8c600
+    // xxx-original-323.1-scylla-fixed .tls         1000 [    1000]  2b71000 [ 2b71000]      a00  1d7d600
+    // xxx-original-323.1-scylla-fixed BINKCONS     1000 [    1000]  2b72000 [ 2b72000]      200  1d7e000
+    // xxx-original-323.1-scylla-fixed .rsrc       2e000 [   2e000]  2b73000 [ 2b73000]    2de00  1d7e200
+    // xxx-original-323.1-scylla-fixed .reloc      d6000 [   d6000]  2ba1000 [ 2ba1000]    d5600  1dac000
+    // xxx-original-323.1-scylla-fixed .text     125d000 [ 125d000]  2c77000 [ 2c77000]  125cc00  1e81600
 
-    //ManualMapCallback: ImageCallback xxx - original - 323.1 - cff.exe 0 3ed4000 0
-    //ManualMapCallback: ImageCallback xxx-original-323.1.exe           0 3ed3c00 0
+    // ManualMapCallback: ImageCallback xxx - original - 323.1 - cff.exe 0 3ed4000 0
+    // ManualMapCallback: ImageCallback xxx-original-323.1.exe           0 3ed3c00 0
     // 0x3ed3000
 
     auto correct_size = ntheader->OptionalHeader.BaseOfCode;
@@ -686,31 +654,22 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
         //      << "\n";
 
         int prot = UC_PROT_READ | UC_PROT_EXEC | UC_PROT_WRITE;
-        if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
-            prot |= UC_PROT_EXEC;
-        if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_WRITE)
-            prot |= UC_PROT_WRITE;
+        if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) prot |= UC_PROT_EXEC;
+        if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_WRITE) prot |= UC_PROT_WRITE;
 
-        auto SectionSize = (DWORD)ALIGN_UP_MIN1(
-            std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
-            SectionAlignment);
+        auto SectionSize = ALIGN_UP_MIN1(std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData), SectionAlignment);
 
         correct_size += SectionSize;
 
         uc_mem_protect(m_uc, image_base + SectionHeader[i].VirtualAddress, SectionSize, prot);
 
         if (SectionHeader[i].Characteristics & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE)) {
-            bool bIsUnknownSection = !(
-                0 == memcmp((char*)SectionHeader[i].Name, ".text\0\0\0", 8) ||
-                0 == memcmp((char*)SectionHeader[i].Name, "INIT\0\0\0\0", 8) ||
-                0 == memcmp((char*)SectionHeader[i].Name, "PAGE\0\0\0\0", 8));
+            bool bIsUnknownSection = !(0 == memcmp(SectionHeader[i].Name, ".text\0\0\0", 8) || 0 == memcmp(SectionHeader[i].Name, "INIT\0\0\0\0", 8) || 0 == memcmp(SectionHeader[i].Name, "PAGE\0\0\0\0", 8));
 
             mod->FakeSections.emplace_back(SectionHeader[i].VirtualAddress, SectionSize, (char*)SectionHeader[i].Name, bIsUnknownSection);
 
             uc_hook trace3;
-            uc_hook_add(m_uc, &trace3, UC_HOOK_CODE, EmuUnknownAPI,
-                        this, image_base + SectionHeader[i].VirtualAddress,
-                        image_base + SectionHeader[i].VirtualAddress + SectionSize - 1);
+            uc_hook_add(m_uc, &trace3, UC_HOOK_CODE, EmuUnknownAPI, this, image_base + SectionHeader[i].VirtualAddress, image_base + SectionHeader[i].VirtualAddress + SectionSize - 1);
         }
     }
 }
@@ -759,8 +718,7 @@ T uc_peek(uc_engine* uc) {
     T value;
     uintptr_t rsp;
     if (!uc_reg_read(uc, UC_X86_REG_RSP, &rsp))
-        if (!uc_mem_read(uc, rsp, &value, sizeof(value)))
-            return value;
+        if (!uc_mem_read(uc, rsp, &value, sizeof(value))) return value;
     LOG("error uc_pop");
     return {};
 }
@@ -779,8 +737,7 @@ T uc_pop(uc_engine* uc) {
 }
 
 uintptr_t uc_call(uc_engine* uc, uintptr_t target, uintptr_t source) {
-    if (source == 0)
-        source = uc_rip(uc);
+    if (source == 0) source = uc_rip(uc);
     uc_push(uc, source);
     set_rip(uc, target);
     return source;
@@ -815,7 +772,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 auto splut = preg_split(" ([-+]) ", pystring::rstrip(str, "]"), MAXINT, PREG_SPLIT_DELIM_CAPTURE);
                 if (splut.size() == 3) {
                     abso = (rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
-                    //LOG("abso: {:x}", abso);
+                    // LOG("abso: {:x}", abso);
                     return fmt::format("[rel {:#x}]", abso);
                 }
             }
@@ -823,13 +780,13 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
         };
 
         auto [it, suc] = visited.emplace(address);
-        if (ctx->m_DisassembleForce || ctx->m_RewriteRsp || suc) {
+        if (suc && (ctx->m_DisassembleForce || ctx->m_RewriteRsp)) {
             was_disassembling = true;
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
 
             cs_insn* insn;
-            //memset(&insn, 0, sizeof(insn));
+            // memset(&insn, 0, sizeof(insn));
 
             int64_t rsp;
             uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
@@ -840,8 +797,8 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 int ii = 0;
 
                 std::string op_string = insn[ii].op_str;
-                //regex = r"\b(rip[+-]0x[0-9a-f]+)"
-                //operand = re.sub(regex, lambda m: ripadd(m.group(), ea + size), operand, 0, re.IGNORECASE)
+                // regex = r"\b(rip[+-]0x[0-9a-f]+)"
+                // operand = re.sub(regex, lambda m: ripadd(m.group(), ea + size), operand, 0, re.IGNORECASE)
                 uintptr_t rip_rel_addr = 0;
                 if (~pystring::find(op_string, "[rip ")) {
                     std::vector<std::string> splut;
@@ -854,7 +811,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 std::string mnem_str(mnem);
                 auto disasm = pystring::rstrip(fmt::format("{} {}", mnem, op_string));
 
-                //if (mnem == "xchg") {
+                // if (mnem == "xchg") {
                 //    auto& xchg_count = insn_count[mnem];
                 //    xchg_count       = xchg_count + 1;
                 //    if (xchg_count == 1) {
@@ -867,35 +824,44 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     // e = 50 - r
                     // e + r = 50
                     // r = 50 - e
-                    if (e_rsp == 0x200 && !ctx->m_RewriteRspDone) {
+                    if (e_rsp == 0x1f0 && mnem_str == "call") {
+                        // This really shouldn't be needed, but... hmmmm
+                        last_self_ptr = parseUint(op_string, 16);
+                        LOG("call {:x}", last_self_ptr);
+                    } else if (e_rsp == 0x200 && !ctx->m_RewriteRspDone) {
                         ctx->m_RewriteRspDone   = true;
                         uintptr_t resume_target = ctx->m_ImageEnd + 0x100 + 0x144b741c6 - 0x144b74100 + 6;
                         uc_mem_write(uc, 0x50000 - 0x1f8, &resume_target, sizeof(resume_target));
                         ctx->m_BalanceEntry = virtualBase;
                         LOG("rewrote RSP to {:x}", resume_target);
                     } else if (e_rsp > 0x200) {
-                        if (rip_rel_addr && (mnem_str == "lea" || mnem_str == "mov")) {
+                        if (rip_rel_addr && (mnem_str == "lea" || mnem_str == "mov") && op_string[0] == 'r') {
                             uintptr_t this_ptr;
                             if (mnem_str == "lea") {
                                 this_ptr = rip_rel_addr;
-                                //LOG("lea: {:x}", this_ptr);
+                                // LOG("lea: {:x}", this_ptr);
                             } else {
                                 this_ptr = uc_qword(uc, rip_rel_addr);
-                                //LOG("mov: {:x}", this_ptr);
+                                // LOG("mov: {:x}", this_ptr);
                             }
-                            if (this_ptr == last_self_ptr) {
-                                ctx->m_BalanceEntry = this_ptr;
-                                ctx->m_RewriteRsp   = false;
-                                LOG("starting address is {:x}", this_ptr);
+                            LOG("address is {:x}", this_ptr);
+                            if (this_ptr != 0x140000000) {
+                                if (this_ptr == last_self_ptr) {
+                                    ctx->m_BalanceEntry = this_ptr;
+                                    ctx->m_RewriteRsp   = false;
+                                    LOG("starting address is {:x}", this_ptr);
+                                } else {
+                                    LOG("tentative starting address is {:x}", this_ptr);
+                                    last_self_ptr = this_ptr;
+                                }
                             }
-                            last_self_ptr = this_ptr;
                         }
                     }
                 }
 
                 if (ctx->m_SkipSecondCall || ctx->m_SkipFourthCall) {
                     if (!strcmp(mnem, "call")) {
-                        char* errch      = NULL;
+                        char* errch      = nullptr;
                         uintptr_t target = strtoull(op_string.c_str(), &errch, 16);
                         if (*errch != '\0') {
                             *outs << "call operand couldn't be converted to ll: " << op_string << "\n";
@@ -905,8 +871,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         auto [iter, inserted] = call_targets.emplace(target);
                         if (inserted) {
                             ctx->m_Calls.emplace_back(ctx->NormaliseBase(address, 0), ctx->NormaliseBase(address + insn[ii].size + mem::pointer(code - 4).as<int32_t&>(), 0));
-                            if (megafunc)
-                                op_string = megafunc->Lookup(target);
+                            if (megafunc) op_string = megafunc->Lookup(target);
                             auto& call_count = insn_count[mnem];
                             call_count       = call_count + 1;
                             *outs << fmt::format("{} {} used {} times with unique target\n", mnem, op_string, call_count);
@@ -974,26 +939,22 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
                     if (!pystring::startswith(mnem, "nop")) {
                         FuncTailInsn fti;
-                        fti.ea(virtualBase)
-                            .text(pystring::rstrip(fmt::format("{} {}", mnem, op_string)))
-                            .size(size)
-                            .code(std::string((char*)codeBuffer, size))
-                            .mnemonic(mnem)
-                            .operands(op_string);
+                        fti.ea(virtualBase).text(pystring::rstrip(fmt::format("{} {}", mnem, op_string))).size(size).code(std::string((char*)codeBuffer, size)).mnemonic(mnem).operands(op_string);
 
-                        //history.push_back(fmt::format("{} {}", mnem, op_string));
+                        // history.push_back(fmt::format("{} {}", mnem, op_string));
                         history.push_back(fti);
                     }
 
                     group_t capture_groups;
                     map_fti insn_groups;
                     vector_fti insn_list;
-                    if (1 && multimatch(history, {
-                                                     R"(push rbp)",
-                                                     R"(lea rbp, \[rel ({jtarget}[::address::])\])",
-                                                     R"(xchg qword ptr \[rsp\], rbp)",
-                                                     R"(jmp ({ctarget}[::address::]))",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            R"(push rbp)",
+                                            R"(lea rbp, \[rel ({jtarget}[::address::])\])",
+                                            R"(xchg qword ptr \[rsp\], rbp)",
+                                            R"(jmp ({ctarget}[::address::]))",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: call-jmp");
@@ -1006,9 +967,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 11)
                                 mbs(chunk.front().ea()).nop(chunk_len);
                             else {
-                                mbs(chunk.front().ea())
-                                    .call(parseUint(capture_groups["ctarget"][0], 16))
-                                    .jmp(parseUint(capture_groups["jtarget"][0], 16));
+                                mbs(chunk.front().ea()).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16));
                                 break;
                             }
                         }
@@ -1018,22 +977,19 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         // we need a way to trigger our "call counter"... lets
                         // use some temporary memory as a trampoline-ish device:
                         set_rip(ctx->m_uc, scratch);
-                        scratch = mbs(scratch)
-                                      .nop(1)
-                                      .call(parseUint(capture_groups["ctarget"][0], 16))
-                                      .jmp(parseUint(capture_groups["jtarget"][0], 16))
-                                      .as<uintptr_t>();
+                        scratch = mbs(scratch).nop(1).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16)).as<uintptr_t>();
                         adjust_rsp(ctx->m_uc, +8);
                         return;
 #endif
                     }
 
-                    if (1 && multimatch(history, {
-                                                     R"(push rbp)",
-                                                     R"(lea rbp, \[rel ({jtarget}[::address::])\])",
-                                                     R"(xchg qword ptr \[rsp\], rbp)",
-                                                     R"(jmp ({ctarget}[::address::]))",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            R"(push rbp)",
+                                            R"(lea rbp, \[rel ({jtarget}[::address::])\])",
+                                            R"(xchg qword ptr \[rsp\], rbp)",
+                                            R"(jmp ({ctarget}[::address::]))",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: call-jmp-double-push");
@@ -1046,9 +1002,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 11)
                                 mbs(chunk.front().ea()).nop(chunk_len);
                             else {
-                                mbs(chunk.front().ea())
-                                    .call(parseUint(capture_groups["ctarget"][0], 16))
-                                    .jmp(parseUint(capture_groups["jtarget"][0], 16));
+                                mbs(chunk.front().ea()).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16));
                                 break;
                             }
                         }
@@ -1058,29 +1012,26 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         // we need a way to trigger our "call counter"... lets
                         // use some temporary memory as a trampoline-ish device:
                         set_rip(ctx->m_uc, scratch);
-                        scratch = mbs(scratch)
-                                      .nop(1)
-                                      .call(parseUint(capture_groups["ctarget"][0], 16))
-                                      .jmp(parseUint(capture_groups["jtarget"][0], 16))
-                                      .as<uintptr_t>();
+                        scratch = mbs(scratch).nop(1).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16)).as<uintptr_t>();
                         adjust_rsp(ctx->m_uc, +8);
                         return;
 #endif
                     }
 
-                    //LOG("chunk: {}", pystring::join("; ", _::map2(chunk, [](const auto& ft) { return ft.text(); })));
-                    if (1 && multimatch(history, {R"(push rbp)",
-                                                  R"(movabs rbp, ({raxtarget}[::address::]))",
-                                                  R"(xchg qword ptr \[rsp\], rbp)",
-                                                  R"(push ({rax}[::r64-8::]))",
-                                                  R"(push ({rcx}[::r64-8::]))",
-                                                  R"(mov ${rax}, qword ptr \[rsp\+0x10\])",
-                                                  R"(movabs ${rcx}, ({rcxtarget}[::address::]))",
-                                                  R"(({cmov}cmov\w+) ${rax}, ${rcx})",
-                                                  R"(mov qword ptr \[rsp\+0x10\], ${rax})",
-                                                  R"(pop ${rcx})",
-                                                  R"(pop ${rax})",
-                                                  R"(ret)"},
+                    // LOG("chunk: {}", pystring::join("; ", _::map2(chunk, [](const auto& ft) { return ft.text(); })));
+                    if (1 && multimatch(history,
+                                        {R"(push rbp)",
+                                         R"(movabs rbp, ({raxtarget}[::address::]))",
+                                         R"(xchg qword ptr \[rsp\], rbp)",
+                                         R"(push ({rax}[::r64-8::]))",
+                                         R"(push ({rcx}[::r64-8::]))",
+                                         R"(mov ${rax}, qword ptr \[rsp\+0x10\])",
+                                         R"(movabs ${rcx}, ({rcxtarget}[::address::]))",
+                                         R"(({cmov}cmov\w+) ${rax}, ${rcx})",
+                                         R"(mov qword ptr \[rsp\+0x10\], ${rax})",
+                                         R"(pop ${rcx})",
+                                         R"(pop ${rax})",
+                                         R"(ret)"},
                                         capture_groups, insn_groups, insn_list, '$')) {
                         LOG("multimatch: mini-cmov");
                         auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
@@ -1098,7 +1049,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                     auto cmov_addr = cmov_insn->ea();
                                     auto condition = (cmov_insn->code()[2] & 0x0f) ^ 0x01;
 
-                                    //auto condition = mbs(cmov_addr).cmovcc();
+                                    // auto condition = mbs(cmov_addr).cmovcc();
                                     LOG("cmov: {} {:x} condition: {:x}", cmov_insn->text(), cmov_insn->ea(), condition);
                                     HexDump::dumpBytesAsHex(*outs, cmov_insn->code());
                                     mbs(chunk.front().ea())
@@ -1107,15 +1058,12 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                         .db(0xCC);
 
                                     // revisit the modified code to ensure everything is ok
-                                    //LOG("setting rip to {:x}", scratch);
+                                    // LOG("setting rip to {:x}", scratch);
 #if REVISIT_OBFU
                                     visited.erase(chunk.front().ea());
                                     set_rip(ctx->m_uc, scratch);
-                                    scratch = mbs(scratch)
-                                                  .nop(1)
-                                                  .jmp(chunk.front().ea())
-                                                  .as<uintptr_t>();
-                                    //LOG("setting scratch to {:x}", scratch);
+                                    scratch = mbs(scratch).nop(1).jmp(chunk.front().ea()).as<uintptr_t>();
+                                    // LOG("setting scratch to {:x}", scratch);
                                     adjust_rsp(ctx->m_uc, +0x10);
                                     return;
 #endif
@@ -1125,16 +1073,17 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         }
                     }
 
-                    if (1 && multimatch(history, {
-                                                     // push rbp
-                                                     // lea  rbp, [rel 0x144698cef]
-                                                     // xchg qword ptr [rsp], rbp
-                                                     // ret
-                                                     R"(push rbp)",
-                                                     R"(lea rbp, \[rel ({jtarget}[::address::])\])",
-                                                     R"(xchg qword ptr \[rsp\], rbp)",
-                                                     R"(ret)",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            // push rbp
+                                            // lea  rbp, [rel 0x144698cef]
+                                            // xchg qword ptr [rsp], rbp
+                                            // ret
+                                            R"(push rbp)",
+                                            R"(lea rbp, \[rel ({jtarget}[::address::])\])",
+                                            R"(xchg qword ptr \[rsp\], rbp)",
+                                            R"(ret)",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: jmp");
@@ -1147,9 +1096,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 5)
                                 mbs(chunk.front().ea()).nop(chunk_len);
                             else {
-                                mbs(chunk.front().ea())
-                                    .jmp(parseUint(capture_groups["jtarget"][0], 16))
-                                    .db(0xCC);
+                                mbs(chunk.front().ea()).jmp(parseUint(capture_groups["jtarget"][0], 16)).db(0xCC);
                                 break;
                             }
                         }
@@ -1159,19 +1106,16 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                         // we need a way to trigger our "call counter"... lets
                         // use some temporary memory as a trampoline-ish device:
                         set_rip(ctx->m_uc, scratch);
-                        scratch = mbs(scratch)
-                                      .nop(1)
-                                      .call(parseUint(capture_groups["ctarget"][0], 16))
-                                      .jmp(parseUint(capture_groups["jtarget"][0], 16))
-                                      .as<uintptr_t>();
+                        scratch = mbs(scratch).nop(1).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16)).as<uintptr_t>();
                         adjust_rsp(ctx->m_uc, +8);
                         return;
 #endif
                     }
-                    if (1 && multimatch(history, {
-                                                     R"(mov qword ptr \[rsp-8\], [::r64-8::])",
-                                                     R"(lea rsp, \[rsp-8\])",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            R"(mov qword ptr \[rsp-8\], [::r64-8::])",
+                                            R"(lea rsp, \[rsp-8\])",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: push rbp");
@@ -1181,19 +1125,17 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             return lhs.ea() + lhs.size() == rhs.ea();
                         });
                         for (auto chunk : chunks)
-                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
-                                mbs(chunk.front().ea()).nop(chunk_len);
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea()) mbs(chunk.front().ea()).nop(chunk_len);
                         for (auto chunk : chunks) {
-                            mbs(chunk.front().ea())
-                                .push(0xf & (chunk.front().code()[2] & ~0x44) >> 3)
-                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            mbs(chunk.front().ea()).push(0xf & (chunk.front().code()[2] & ~0x44) >> 3).nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
                             break;
                         }
                     }
-                    if (1 && multimatch(history, {
-                                                     R"(lea rsp, \[rsp-8\])",
-                                                     R"(mov qword ptr \[rsp\], [::r64-8::])",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            R"(lea rsp, \[rsp-8\])",
+                                            R"(mov qword ptr \[rsp\], [::r64-8::])",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: push rbp");
@@ -1203,19 +1145,17 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             return lhs.ea() + lhs.size() == rhs.ea();
                         });
                         for (auto chunk : chunks)
-                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
-                                mbs(chunk.front().ea()).nop(chunk_len);
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea()) mbs(chunk.front().ea()).nop(chunk_len);
                         for (auto chunk : chunks) {
-                            mbs(chunk.front().ea())
-                                .push(0xf & (insn_list[1].code()[2]) >> 3)
-                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            mbs(chunk.front().ea()).push(0xf & (insn_list[1].code()[2]) >> 3).nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
                             break;
                         }
                     }
-                    if (1 && multimatch(history, {
-                                                     R"(lea rsp, \[rsp\+8\])",
-                                                     R"(mov ({rline}[::r64-8::]), qword ptr \[rsp-8\])",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            R"(lea rsp, \[rsp\+8\])",
+                                            R"(mov ({rline}[::r64-8::]), qword ptr \[rsp-8\])",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: pop rbp1");
@@ -1225,8 +1165,7 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             return lhs.ea() + lhs.size() == rhs.ea();
                         });
                         for (auto chunk : chunks)
-                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
-                                mbs(chunk.front().ea()).nop(chunk_len);
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea()) mbs(chunk.front().ea()).nop(chunk_len);
                         for (auto chunk : chunks) {
                             mbs(chunk.front().ea())
                                 //.push(0xf & (insn_list[1].code()[2]) >> 3)
@@ -1236,10 +1175,11 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             break;
                         }
                     }
-                    if (1 && multimatch(history, {
-                                                     R"(mov ({rline}[::r64-8::]), qword ptr \[rsp\])",
-                                                     R"(lea rsp, \[rsp\+8\])",
-                                                 },
+                    if (1 && multimatch(history,
+                                        {
+                                            R"(mov ({rline}[::r64-8::]), qword ptr \[rsp\])",
+                                            R"(lea rsp, \[rsp\+8\])",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: pop rbp2");
@@ -1249,20 +1189,18 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             return lhs.ea() + lhs.size() == rhs.ea();
                         });
                         for (auto chunk : chunks)
-                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
-                                mbs(chunk.front().ea()).nop(chunk_len);
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea()) mbs(chunk.front().ea()).nop(chunk_len);
                         for (auto chunk : chunks) {
-                            mbs(chunk.front().ea())
-                                .pop(0xf & ((_::first(insn_groups["rline"]).code()[2] & ~0x44) >> 3))
-                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            mbs(chunk.front().ea()).pop(0xf & ((_::first(insn_groups["rline"]).code()[2] & ~0x44) >> 3)).nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
                             break;
                         }
                     }
-                    if (1 && multimatch(history, {
+                    if (1 && multimatch(history,
+                                        {
 
-                                                     R"(lea rsp, \[rsp\+8\])",
-                                                     R"(jmp qword ptr \[rsp-8\])",
-                                                 },
+                                            R"(lea rsp, \[rsp\+8\])",
+                                            R"(jmp qword ptr \[rsp-8\])",
+                                        },
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: ret");
@@ -1272,42 +1210,40 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                             return lhs.ea() + lhs.size() == rhs.ea();
                         });
                         for (auto chunk : chunks)
-                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea())
-                                mbs(chunk.front().ea()).nop(chunk_len);
+                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea()) mbs(chunk.front().ea()).nop(chunk_len);
                         for (auto chunk : chunks) {
-                            mbs(chunk.front().ea())
-                                .db(0xc3)
-                                .nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
+                            mbs(chunk.front().ea()).db(0xc3).nop(chunk.back().ea() + chunk.back().size() - chunk.front().ea() - 1);
                             break;
                         }
                     }
 
-                    if (0 && multimatch(history, {
-                                                     R"(jmp .*)",
-                                                     R"(mov eax, dword ptr \[rip\+.*])",
-                                                     R"(mov edx, dword ptr \[rip-.*])",
-                                                     R"(cmp eax, edx)",
-                                                     R"(jne ({jne}.*)",
-                                                     R"(mov eax, dword ptr \[rbp\+0x64])",
-                                                     R"(test eax, eax)",
-                                                     R"(jne .*)",
+                    if (0 && multimatch(history,
+                                        {
+                                            R"(jmp .*)",
+                                            R"(mov eax, dword ptr \[rip\+.*])",
+                                            R"(mov edx, dword ptr \[rip-.*])",
+                                            R"(cmp eax, edx)",
+                                            R"(jne ({jne}.*)",
+                                            R"(mov eax, dword ptr \[rbp\+0x64])",
+                                            R"(test eax, eax)",
+                                            R"(jne .*)",
 
-                                                     //R"(push.*0x10)",
-                                                     //R"(test rsp, 0xf)",
-                                                     //R"(jn[ze] .*)",
-                                                     ////R"(push.*0x18)",
-                                                     //R"(call ({target}0x\x+))",
+                                            // R"(push.*0x10)",
+                                            // R"(test rsp, 0xf)",
+                                            // R"(jn[ze] .*)",
+                                            ////R"(push.*0x18)",
+                                            // R"(call ({target}0x\x+))",
 
-                                                     //R"((add|sub) rsp, .*)",
-                                                     //R"((mov|lea).*r[sb]p.*r[sb]p)",
-                                                     //R"((mov|lea).*r[sb]p.*r[sb]p)",
-                                                     //R"(lea rbp, \[rel ({jmp}\w+)])",
-                                                     //R"(xchg \[rsp], rbp)",
-                                                     //R"(push rbp)",
-                                                     //R"(lea rbp, \[rel ({call}\w+)])",
-                                                     //R"(xchg \[rsp], rbp)",
-                                                     //R"(retn?)",
-                                                 },
+                                            // R"((add|sub) rsp, .*)",
+                                            // R"((mov|lea).*r[sb]p.*r[sb]p)",
+                                            // R"((mov|lea).*r[sb]p.*r[sb]p)",
+                                            // R"(lea rbp, \[rel ({jmp}\w+)])",
+                                            // R"(xchg \[rsp], rbp)",
+                                            // R"(push rbp)",
+                                            // R"(lea rbp, \[rel ({call}\w+)])",
+                                            // R"(xchg \[rsp], rbp)",
+                                            // R"(retn?)",
+                                        },
                                         capture_groups, insn_groups, insn_list, '^')) {
                         for (auto& [key, values] : capture_groups) {
                             *outs << "capture group: " << key << ": " << _::join(values, ", ") << std::endl;
@@ -1356,8 +1292,7 @@ static void IntrCallback(uc_engine* uc, int exception, void* user_data) {
     uc_emu_stop(uc);
 }
 
-static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
-                               uint64_t address, int size, int64_t value, void* user_data) {
+static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data) {
     PeEmulation* ctx = (PeEmulation*)user_data;
 
     switch (type) {
@@ -1377,7 +1312,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             else
                 *outs << "UC_MEM_FETCH_PROT rip at " << rip << "\n";
 
-            //return true;
+            // return true;
             uc_emu_stop(uc);
             break;
         }
@@ -1391,8 +1326,8 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             else
                 *outs << "UC_MEM_WRITE_PROT from " << address << "\n";
 
-            //RestClient::Response r = RestClient::get("http://127.0.0.1:2020/ida/api/v1.0/name?ea=0x140000000");
-            //if (r.code == 200) {
+            // RestClient::Response r = RestClient::get("http://127.0.0.1:2020/ida/api/v1.0/name?ea=0x140000000");
+            // if (r.code == 200) {
             //    auto name = string_between("'", "'", r.body);
             //    if (name.size()) {
             //        *outs << "UC_MEM_WRITE_PROT: name: " << name << "\n";
@@ -1403,13 +1338,12 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             *outs << "UC_MEM_WRITE_PROT: size 0x" << std::hex << size << std::dec << "\n";
             *outs << "UC_MEM_WRITE_PROT: value 0x" << std::hex << value << std::dec << "\n";
 
-            std::stringstream region2;
-            if (ctx->FindAddressInRegion(rip, region2))
+            if (std::stringstream region2; ctx->FindAddressInRegion(rip, region2))
                 *outs << "UC_MEM_WRITE_PROT rip at " << region2.str() << "\n";
             else
                 *outs << "UC_MEM_WRITE_PROT rip at " << ctx->NormaliseBase(rip) << "\n";
 
-            //return true;
+            // return true;
             uc_emu_stop(uc);
             break;
         }
@@ -1417,8 +1351,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             uint64_t rip;
             uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 
-            std::stringstream region;
-            if (ctx->FindAddressInRegion(address, region))
+            if (std::stringstream region; ctx->FindAddressInRegion(address, region))
                 *outs << "UC_MEM_FETCH_UNMAPPED from " << region.str() << "\n";
             else
                 *outs << "UC_MEM_FETCH_UNMAPPED from " << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
@@ -1429,7 +1362,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             else
                 *outs << "UC_MEM_FETCH_UNMAPPED rip at " << std::hex << ctx->NormaliseBase(rip) << std::dec << "\n";
 
-            //return true;
+            // return true;
             uc_emu_stop(uc);
             break;
         }
@@ -1437,8 +1370,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             uint64_t rip;
             uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 
-            std::stringstream region;
-            if (ctx->FindAddressInRegion(address, region))
+            if (std::stringstream region; ctx->FindAddressInRegion(address, region))
                 *outs << "UC_MEM_READ_UNMAPPED from " << region.str() << "\n";
             else
                 *outs << "UC_MEM_READ_UNMAPPED from " << std::hex << address << std::dec << "\n";
@@ -1449,7 +1381,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             else
                 *outs << "UC_MEM_READ_UNMAPPED rip at " << std::hex << rip << std::dec << "\n";
 
-            //return true;
+            // return true;
             uc_emu_stop(uc);
             break;
         }
@@ -1457,12 +1389,11 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             uint64_t rip;
             uc_reg_read(uc, UC_X86_REG_RIP, &rip);
 
-            std::stringstream region;
-            if (ctx->FindAddressInRegion(address, region))
+            if (std::stringstream region; ctx->FindAddressInRegion(address, region))
                 *outs << "UC_MEM_WRITE_UNMAPPED from " << region.str() << "\n";
             else
                 *outs << "UC_MEM_WRITE_UNMAPPED from " << address << "\n";
-            //uint64_t address, int size, int64_t value
+            // uint64_t address, int size, int64_t value
             *outs << "UC_MEM_WRITE_UNMAPPED: address 0x" << std::hex << address << std::dec << "\n";
             *outs << "UC_MEM_WRITE_UNMAPPED: size 0x" << std::hex << size << std::dec << "\n";
             *outs << "UC_MEM_WRITE_UNMAPPED: value 0x" << std::hex << value << std::dec << "\n";
@@ -1472,7 +1403,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
             else
                 *outs << "UC_MEM_WRITE_UNMAPPED rip at " << rip << "\n";
 
-            //return true;
+            // return true;
             uc_emu_stop(uc);
             break;
         }
@@ -1480,8 +1411,7 @@ static bool InvalidRwxCallback(uc_engine* uc, uc_mem_type type,
     return false;
 }
 
-static void RwxCallback(uc_engine* uc, uc_mem_type type,
-                        uint64_t address, int size, int64_t value, void* user_data) {
+static void RwxCallback(uc_engine* uc, uc_mem_type type, uint64_t address, int size, int64_t value, void* user_data) {
     PeEmulation* ctx = (PeEmulation*)user_data;
 
     switch (type) {
@@ -1489,12 +1419,8 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
             if (!ctx->m_SaveRead.empty() || ctx->m_Dwords) {
                 if (address > 0x50000) {
                     switch (size) {
-                        case 1:
-                            ctx->m_Read.emplace_back(ctx->NormaliseBase(address), (uint8_t)value);
-                            break;
-                        case 2:
-                            ctx->m_Read.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
-                            ctx->m_Read.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
+                        case 1: ctx->m_Read.emplace_back(ctx->NormaliseBase(address), (uint8_t)value); break;
+                        case 2: ctx->m_Read.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0)); ctx->m_Read.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
                         case 4:
                             ctx->m_Read.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
                             ctx->m_Read.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
@@ -1518,12 +1444,11 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
                                   << "0x" << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
                             uint64_t rip;
                             uc_reg_read(uc, UC_X86_REG_RIP, &rip);
-                            if (ctx->FindAddressInRegion(rip, region))
-                                *outs << "UC_MEM_READ rip at " << region.str() << "\n";
+                            if (ctx->FindAddressInRegion(rip, region)) *outs << "UC_MEM_READ rip at " << region.str() << "\n";
                     }
                     //*outs << "UC_MEM_WRITE: " << std::hex << ctx->NormaliseBase(address) << "\n";
 
-                    //uc_emu_stop(uc);
+                    // uc_emu_stop(uc);
                 }
 
                 break;
@@ -1541,9 +1466,7 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
                         uint64_t old_value;
                         uc_mem_read(uc, address, &old_value, sizeof(old_value));
                         switch (size) {
-                            case 1:
-                                ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)old_value);
-                                break;
+                            case 1: ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)old_value); break;
                             case 2:
                                 ctx->m_Undo.emplace_back(ctx->NormaliseBase(address), (uint8_t)(old_value >> 0));
                                 ctx->m_Undo.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(old_value >> 8));
@@ -1570,15 +1493,12 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
                                       << "0x" << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
                                 uint64_t rip;
                                 uc_reg_read(uc, UC_X86_REG_RIP, &rip);
-                                if (ctx->FindAddressInRegion(rip, region))
-                                    *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
+                                if (ctx->FindAddressInRegion(rip, region)) *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
                         }
                     }
                     if (!ctx->m_SaveWritten.empty() || ctx->m_Dwords) {
                         switch (size) {
-                            case 1:
-                                ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)value);
-                                break;
+                            case 1: ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)value); break;
                             case 2:
                                 ctx->m_Written.emplace_back(ctx->NormaliseBase(address), (uint8_t)(value >> 0));
                                 ctx->m_Written.emplace_back(ctx->NormaliseBase(address + 1), (uint8_t)(value >> 8));
@@ -1605,14 +1525,13 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type,
                                       << "0x" << std::hex << ctx->NormaliseBase(address) << std::dec << "\n";
                                 uint64_t rip;
                                 uc_reg_read(uc, UC_X86_REG_RIP, &rip);
-                                if (ctx->FindAddressInRegion(rip, region))
-                                    *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
+                                if (ctx->FindAddressInRegion(rip, region)) *outs << "UC_MEM_WRITE rip at " << region.str() << "\n";
                         }
                     }
                     //*outs << "UC_MEM_WRITE: " << std::hex << ctx->NormaliseBase(address) << "\n";
-                    //uc_emu_stop(uc);
+                    // uc_emu_stop(uc);
                 }
-                //else if (address > 0x40000 && address < 0x50000 && value > 0x140000000) {
+                // else if (address > 0x40000 && address < 0x50000 && value > 0x140000000) {
                 //                uint64_t result_rsp = 0;
                 //                uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
                 //                ptrdiff_t i = address - result_rsp;
@@ -1636,7 +1555,7 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
     PeEmulation* ctx = (PeEmulation*)user_data;
 
     std::wstring DllName;
-    FakeAPI_t* api = NULL;
+    FakeAPI_t* api = nullptr;
 
     uint64_t currentModule = 0;
     ctx->FindModuleByAddress(address, currentModule);
@@ -1649,8 +1568,7 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
                     UnicodeToANSI(DllName, aDllName);
                     *outs << "API emulation callback not registered: " << aDllName << "!" << api->ProcedureName << "\n";
                     auto retaddr = EmuReadReturnAddress(uc);
-                    if (retaddr >= ctx->m_ImageBase && retaddr < ctx->m_ImageEnd)
-                        *outs << "called from imagebase+0x" << std::hex << (ULONG)(retaddr - ctx->m_ImageBase) << "\n";
+                    if (retaddr >= ctx->m_ImageBase && retaddr < ctx->m_ImageEnd) *outs << "called from imagebase+0x" << std::hex << (ULONG)(retaddr - ctx->m_ImageBase) << "\n";
                     uc_emu_stop(uc);
                 } else {
                     void (*callback)(uc_engine * uc, uint64_t address, uint32_t size, void* user_data) = (decltype(callback))api->EmuCallback;
@@ -1661,8 +1579,7 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
                 LOG("unknown API {:#x} called", ctx->NormaliseBase(address));
                 //*outs << "unknown API called\n";
                 auto retaddr = EmuReadReturnAddress(uc);
-                if (retaddr >= ctx->m_ImageBase && retaddr < ctx->m_ImageEnd)
-                    *outs << "called from imagebase+0x" << std::hex << (ULONG)(retaddr - ctx->m_ImageBase) << "\n";
+                if (retaddr >= ctx->m_ImageBase && retaddr < ctx->m_ImageEnd) *outs << "called from imagebase+0x" << std::hex << (ULONG)(retaddr - ctx->m_ImageBase) << "\n";
                 uc_emu_stop(uc);
             }
         }
@@ -1674,7 +1591,7 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
     }
 
     if (currentModule == ctx->m_ImageBase && ctx->m_IsPacked && !ctx->m_ImageRealEntry) {
-        FakeSection_t* section = NULL;
+        FakeSection_t* section = nullptr;
         if (ctx->FindSectionByAddress(address, &section) && !section->IsUnknownSection) {
             ctx->m_ImageRealEntry = address;
         }
@@ -1682,7 +1599,7 @@ static void EmuUnknownAPI(uc_engine* uc, uint64_t address, uint32_t size, void* 
 }
 
 static void init_descriptor64(SegmentDesctiptorX64* desc, uint64_t base, uint64_t limit, bool is_code, bool is_long_mode) {
-    desc->descriptor.all              = 0;  //clear the descriptor
+    desc->descriptor.all              = 0;  // clear the descriptor
     desc->descriptor.fields.base_low  = base;
     desc->descriptor.fields.base_mid  = (base >> 16) & 0xff;
     desc->descriptor.fields.base_high = base >> 24;
@@ -1698,9 +1615,9 @@ static void init_descriptor64(SegmentDesctiptorX64* desc, uint64_t base, uint64_
 
     desc->descriptor.fields.dpl     = 0;
     desc->descriptor.fields.present = 1;
-    desc->descriptor.fields.db      = 1;  //64 bit
+    desc->descriptor.fields.db      = 1;  // 64 bit
     desc->descriptor.fields.type    = is_code ? 0xb : 3;
-    desc->descriptor.fields.system  = 1;  //code or data
+    desc->descriptor.fields.system  = 1;  // code or data
     desc->descriptor.fields.l       = is_long_mode ? 1 : 0;
 }
 
@@ -1770,7 +1687,7 @@ void PeEmulation::InitTebPeb() {
     m_TebBase = 0x80000ull;
     m_TebEnd  = m_TebBase + AlignSize(sizeof(TEB), PAGE_SIZE);
 
-    TEB teb = {0};
+    TEB teb = {nullptr};
 
     teb.ProcessEnvironmentBlock = (PPEB)m_PebBase;
 
@@ -1785,7 +1702,7 @@ void PeEmulation::InitTebPeb() {
 }
 
 void PeEmulation::InitKTHREAD() {
-    //todo
+    // todo
     m_KThreadBase = HeapAlloc(1234);
 
     uc_x86_msr msr;
@@ -1796,33 +1713,28 @@ void PeEmulation::InitKTHREAD() {
 }
 
 void PeEmulation::SortModuleList() {
-    std::sort(m_FakeModules.begin(), m_FakeModules.end(),
-              [](const FakeModule_t* value1, const FakeModule_t* value2) {
-                  return value1->Priority > value2->Priority;
-              });
+    std::sort(m_FakeModules.begin(), m_FakeModules.end(), [](const FakeModule_t* value1, const FakeModule_t* value2) { return value1->Priority > value2->Priority; });
 }
 
-void PeEmulation::InsertTailList(
-    IN ULONG64 ListHeadAddress,
-    IN ULONG64 EntryAddress) {
+void PeEmulation::InsertTailList(IN ULONG64 ListHeadAddress, IN ULONG64 EntryAddress) {
     PLIST_ENTRY Blink;
 
-    //Blink = ListHead->Blink;
+    // Blink = ListHead->Blink;
     uc_mem_read(m_uc, ListHeadAddress + offsetof(LIST_ENTRY, Blink), &Blink, sizeof(Blink));
 
-    //Entry->Flink = (PLIST_ENTRY)ListHeadAddress;
+    // Entry->Flink = (PLIST_ENTRY)ListHeadAddress;
 
     uc_mem_write(m_uc, EntryAddress + offsetof(LIST_ENTRY, Flink), &ListHeadAddress, sizeof(ListHeadAddress));
 
-    //Entry->Blink = Blink;
+    // Entry->Blink = Blink;
 
     uc_mem_write(m_uc, EntryAddress + offsetof(LIST_ENTRY, Blink), &Blink, sizeof(Blink));
 
-    //Blink->Flink = (PLIST_ENTRY)EntryAddress;
+    // Blink->Flink = (PLIST_ENTRY)EntryAddress;
 
     uc_mem_write(m_uc, (uint64_t)Blink + offsetof(LIST_ENTRY, Flink), &EntryAddress, sizeof(EntryAddress));
 
-    //ListHead->Blink = (PLIST_ENTRY)EntryAddress;
+    // ListHead->Blink = (PLIST_ENTRY)EntryAddress;
 
     uc_mem_write(m_uc, ListHeadAddress + offsetof(LIST_ENTRY, Blink), &EntryAddress, sizeof(EntryAddress));
 }
@@ -1830,7 +1742,7 @@ void PeEmulation::InsertTailList(
 void PeEmulation::InitPsLoadedModuleList() {
     m_PsLoadedModuleListBase = HeapAlloc(sizeof(LIST_ENTRY));
 
-    LIST_ENTRY PsLoadedModuleList = {0};
+    LIST_ENTRY PsLoadedModuleList = {nullptr};
     PsLoadedModuleList.Blink = PsLoadedModuleList.Flink = (PLIST_ENTRY)m_PsLoadedModuleListBase;
 
     uc_mem_write(m_uc, m_PsLoadedModuleListBase, &PsLoadedModuleList, sizeof(PsLoadedModuleList));
@@ -1838,7 +1750,7 @@ void PeEmulation::InitPsLoadedModuleList() {
     for (size_t i = 0; i < m_FakeModules.size(); ++i) {
         auto LdrEntryBase = HeapAlloc(sizeof(KLDR_DATA_TABLE_ENTRY));
 
-        KLDR_DATA_TABLE_ENTRY LdrEntry = {0};
+        KLDR_DATA_TABLE_ENTRY LdrEntry = {nullptr};
         LdrEntry.DllBase               = (PVOID)m_FakeModules[i]->ImageBase;
         LdrEntry.LoadCount             = 1;
         LdrEntry.EntryPoint            = (PVOID)m_FakeModules[i]->ImageEntry;
@@ -1926,12 +1838,10 @@ ULONG64 PeEmulation::HeapAlloc(ULONG AllocBytes, bool IsPageAlign) {
 
     if (!alloc) {
         for (size_t i = 0; i < m_HeapAllocs.size(); ++i) {
-            if (alloc < m_HeapAllocs[i].base + m_HeapAllocs[i].size)
-                alloc = m_HeapAllocs[i].base + m_HeapAllocs[i].size;
+            if (alloc < m_HeapAllocs[i].base + m_HeapAllocs[i].size) alloc = m_HeapAllocs[i].base + m_HeapAllocs[i].size;
         }
 
-        if (!alloc)
-            alloc = m_HeapBase;
+        if (!alloc) alloc = m_HeapBase;
 
         if (IsPageAlign) {
             alloc      = (alloc % 0x1000ull == 0) ? alloc : AlignSize(alloc, 0x1000ull);
@@ -1954,8 +1864,7 @@ bool PeEmulation::HeapFree(ULONG64 FreeAddress) {
     ULONG64 maxaddr = 0;
 
     for (size_t i = 0; i < m_HeapAllocs.size(); ++i) {
-        if (maxaddr < m_HeapAllocs[i].base)
-            maxaddr = m_HeapAllocs[i].base;
+        if (maxaddr < m_HeapAllocs[i].base) maxaddr = m_HeapAllocs[i].base;
     }
 
     for (size_t i = 0; i < m_HeapAllocs.size(); ++i) {
@@ -2029,8 +1938,7 @@ void WriteMemoryBitmapAccesses(uc_engine* uc, json* j, const std::vector<bool>& 
             std::string fn = fmt::format("{}_{:x}_{:x}_{}.bin", prefix, start_ea, len, filename);
             buf.resize(len);
             uc_mem_read(uc, start_ea, buf.data(), len);
-            if (j)
-                (*j)[last_folder][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
+            if (j) (*j)[last_folder][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
             //*outs << "Writing to '" << fn << "'\n";
             file_put_contents(spread_filename(smart_path(fn)).string(), (char*)buf.data(), buf.size(), 1);
         }
@@ -2122,8 +2030,7 @@ void WriteMemoryAccesses(json* j, std::vector<std::tuple<uintptr_t, uint8_t>>& v
                     std::string fn = fmt::format("{}_{:x}_{:x}_{}.bin", prefix, range_start_address, to_write.size(), filename);
                     //*outs << "Writing to '" << fn << "'\n";
                     file_put_contents(spread_filename(fn).string(), (char*)to_write.data(), to_write.size(), 1);
-                    if (j)
-                        (*j)[last_folder][std::to_string(range_start_address)][std::to_string(to_write.size())].push_back(json::array({short_prefix, filename}));
+                    if (j) (*j)[last_folder][std::to_string(range_start_address)][std::to_string(to_write.size())].push_back(json::array({short_prefix, filename}));
                 }
                 to_write.clear();
                 range_start_address = address;
@@ -2133,7 +2040,7 @@ void WriteMemoryAccesses(json* j, std::vector<std::tuple<uintptr_t, uint8_t>>& v
 
             last_address = address;
         }
-        //if (j) {
+        // if (j) {
         //    std::string json_fn = (dirname(fs::path(prefix)) / "files.json").string();
         //    if (tryAndWriteJson(json_fn, *j))
         //        LOG("wrote json: {}", json_fn);
@@ -2144,9 +2051,7 @@ void WriteMemoryAccesses(json* j, std::vector<std::tuple<uintptr_t, uint8_t>>& v
 }
 
 template <typename KeyType, typename LeftValue, typename RightValue>
-std::map<KeyType, std::pair<LeftValue, RightValue>>
-IntersectMapKeys(const std::map<KeyType, LeftValue>& left,
-                 const std::map<KeyType, RightValue>& right) {
+std::map<KeyType, std::pair<LeftValue, RightValue>> IntersectMapKeys(const std::map<KeyType, LeftValue>& left, const std::map<KeyType, RightValue>& right) {
     std::map<KeyType, std::pair<LeftValue, RightValue>> result;
     typename std::map<KeyType, LeftValue>::const_iterator il  = left.begin();
     typename std::map<KeyType, RightValue>::const_iterator ir = right.begin();
@@ -2239,15 +2144,7 @@ std::map<uintptr_t, std::vector<uint8_t>> WrittenMemoryAsMap(std::vector<std::tu
 uc_err patch_nops(uc_engine* uc, uint64_t address, size_t count) {
     // stored as an array of [9][8] (not ragged)
     const unsigned char nop_bytes[][8] = {
-        {},
-        {0x90},
-        {0x66, 0x90},
-        {0x0f, 0x1f, 0x00},
-        {0x0f, 0x1f, 0x40, 0x00},
-        {0x0f, 0x1f, 0x44, 0x00, 0x00},
-        {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00},
-        {0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00},
-        {0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {}, {0x90}, {0x66, 0x90}, {0x0f, 0x1f, 0x00}, {0x0f, 0x1f, 0x40, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}, {0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00}, {0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
     };
 
     uc_err err = UC_ERR_OK;
@@ -2263,15 +2160,7 @@ uc_err patch_nops(uc_engine* uc, uint64_t address, size_t count) {
 void* patch_nops(void* ptr, size_t count) {
     // stored as an array of [9][8] (not ragged)
     const unsigned char nop_bytes[][8] = {
-        {},
-        {0x90},
-        {0x66, 0x90},
-        {0x0f, 0x1f, 0x00},
-        {0x0f, 0x1f, 0x40, 0x00},
-        {0x0f, 0x1f, 0x44, 0x00, 0x00},
-        {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00},
-        {0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00},
-        {0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {}, {0x90}, {0x66, 0x90}, {0x0f, 0x1f, 0x00}, {0x0f, 0x1f, 0x40, 0x00}, {0x0f, 0x1f, 0x44, 0x00, 0x00}, {0x66, 0x0f, 0x1f, 0x44, 0x00, 0x00}, {0x0f, 0x1f, 0x80, 0x00, 0x00, 0x00, 0x00}, {0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
     };
 
     while (count) {
@@ -2283,32 +2172,18 @@ void* patch_nops(void* ptr, size_t count) {
     return ptr;
 }
 
-void* uc_memcpy(
-    uc_engine* uc,
-    uintptr_t _Dst,
-    void const* _Src,
-    size_t _Size) {
-    return (void*)((UC_ERR_OK == uc_mem_write(uc, _Dst, _Src, _Size)) ? _Dst : 0);
-}
+void* uc_memcpy(uc_engine* uc, uintptr_t _Dst, void const* _Src, size_t _Size) { return (void*)((UC_ERR_OK == uc_mem_write(uc, _Dst, _Src, _Size)) ? _Dst : 0); }
 
-int uc_memcmp(
-    uc_engine* uc,
-    uintptr_t _Dst,
-    void const* _Src,
-    size_t _Size) {
+int uc_memcmp(uc_engine* uc, uintptr_t _Dst, void const* _Src, size_t _Size) {
     std::vector<uint8_t> buf;
     buf.resize(_Size);
     uc_mem_read(uc, _Dst, buf.data(), buf.size());
     return std::memcmp(buf.data(), _Src, _Size);
 }
 
-void* uc_memset(
-    uc_engine* uc,
-    uintptr_t _Dst,
-    int _Val,
-    size_t _Size) {
+void* uc_memset(uc_engine* uc, uintptr_t _Dst, int _Val, size_t _Size) {
     for (size_t i = 0; i < _Size; ++i) {
-        if (UC_ERR_OK != uc_mem_write(uc, _Dst + i, (unsigned char*)(&_Val), 1)) {
+        if (UC_ERR_OK != uc_mem_write(uc, _Dst + i, &_Val, 1)) {
             return nullptr;
         }
     }
@@ -2384,8 +2259,7 @@ void ShowRegisters(uc_engine* uc) {
 void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx, json* j) {
     uint64_t result_rsp = 0;
     uc_reg_read(uc, UC_X86_REG_RSP, &result_rsp);
-    *outs << "RSP: 0x" << std::hex << result_rsp << "\n"
-          << std::dec;
+    *outs << "RSP: 0x" << std::hex << result_rsp << "\n" << std::dec;
     auto ptr        = result_rsp;
     uintptr_t value = 0xdeadbeef;
     for (ptr = 0x4ffb8; ptr > 0x4ff50; ptr -= 8) {
@@ -2398,9 +2272,11 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx, json* j) 
     fs::path read_path(ctx.m_SaveRead);
     fs::path written_path(ctx.m_SaveWritten);
 
-    read_path = read_path / "read";
+    read_path    = read_path / "read";
     written_path = written_path / "written";
     LOG("read_path: {}", read_path.string());
+
+    if (fn_address) ctx.filename = string_between("", "_", ctx.filename, STRING_BETWEEN_INCLUSIVE) + fmt::format("{:x}", fn_address);
 
     if (ctx.m_Unpack) {
         WriteMemoryBitmapAccesses(uc, j, ctx.m_WrittenBitmap, ctx.filename, written_path.lexically_normal().string());
@@ -2410,10 +2286,8 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx, json* j) 
 
         bytes_written += ctx.m_Written.size();
         bytes_read += ctx.m_Read.size();
-        if (!ctx.m_SaveRead.empty())
-            WriteMemoryAccesses(nullptr, ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
-        if (!ctx.m_SaveWritten.empty())
-            WriteMemoryAccesses(j, ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
+        if (!ctx.m_SaveRead.empty()) WriteMemoryAccesses(nullptr, ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
+        if (!ctx.m_SaveWritten.empty()) WriteMemoryAccesses(j, ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
         *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
     }
     if (ctx.m_Dwords) {
@@ -2465,16 +2339,13 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
     virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
     virtual_buffer_t RebuildSectionBuffer;
     mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
-    auto m_normalise_base = [&](mem::pointer& ea) {
-        return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
-    };
+    auto m_normalise_base = [&](mem::pointer& ea) { return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>(); };
 
     uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
 
     auto ntheader = RtlImageNtHeader(imagebuf.GetBuffer());
 
-    auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) +
-                                                 sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
+    auto SectionHeader = (PIMAGE_SECTION_HEADER)((PUCHAR)ntheader + sizeof(ntheader->Signature) + sizeof(ntheader->FileHeader) + ntheader->FileHeader.SizeOfOptionalHeader);
 
     auto SectionCount = ntheader->FileHeader.NumberOfSections;
     for (USHORT i = 0; i < SectionCount; ++i) {
@@ -2486,7 +2357,7 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
         DWORD SectionAlignment;
 
         if (ntheader->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64) {
-            auto ntheader64  = (PIMAGE_NT_HEADERS64)ntheader;
+            auto ntheader64  = ntheader;
             SectionAlignment = ntheader64->OptionalHeader.SectionAlignment;
         } else {
             SectionAlignment = ntheader->OptionalHeader.SectionAlignment;
@@ -2496,18 +2367,8 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
 
         for (WORD i = 0; i < ntheader->FileHeader.NumberOfSections; i++) {
             DWORD SectionSize = SectionHeader[i].Misc.VirtualSize;
-            SectionSize       = (DWORD)ALIGN_UP_MIN1(
-                std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData),
-                SectionAlignment);
-            *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}",
-                                 SectionHeader[i].Name,
-                                 SectionHeader[i].Misc.VirtualSize,
-                                 SectionSize,
-                                 SectionHeader[i].VirtualAddress,
-                                 correct_size,
-                                 SectionHeader[i].SizeOfRawData,
-                                 SectionHeader[i].PointerToRawData)
-                  << "\n";
+            SectionSize       = ALIGN_UP_MIN1(std::max(SectionHeader[i].Misc.VirtualSize, SectionHeader[i].SizeOfRawData), SectionAlignment);
+            *outs << fmt::format("{:8} {:8x} [{:8x}] {:8x} [{:8x}] {:8x} {:8x}", SectionHeader[i].Name, SectionHeader[i].Misc.VirtualSize, SectionSize, SectionHeader[i].VirtualAddress, correct_size, SectionHeader[i].SizeOfRawData, SectionHeader[i].PointerToRawData) << "\n";
 
             correct_size += SectionSize;
             if (ctx.m_RebuildSectionSizes) {
@@ -2528,27 +2389,24 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
     }
 
     if (ctx.m_PatchRuntime) {
-        mem::scan(mem::pattern("01 b9 2f a9"), r)
-            .or_else([] { LOG("Couldn't patch launcher detection"); })
-            .and_then([&](auto m) {
-                LOG("Patching launcher detection at {:#x}", m_normalise_base(m));
-                m.sub(9).rip(4).put_bytes(mem::pattern("b8 01 00 00 00 c3"));
-            });
+        mem::scan(mem::pattern("01 b9 2f a9"), r).or_else([] { LOG("Couldn't patch launcher detection"); }).and_then([&](auto m) {
+            LOG("Patching launcher detection at {:#x}", m_normalise_base(m));
+            m.sub(9).rip(4).put_bytes(mem::pattern("b8 01 00 00 00 c3"));
+        });
 
         if (ctx.m_Calls.size() < 3)
             LOG("Couldn't find second call to patch for runtime execution");
         else {
             auto& [call, target] = ctx.m_Calls[2];
             LOG("Patching runtime tamper detection at offset {:#x}", call);
-            patch_nops((char*)imagebuf.at(call), 5);
+            patch_nops(imagebuf.at(call), 5);
         }
     }
 
     // ctx.RebuildSection(imagebuf.GetBuffer(), (ULONG)(ctx.m_ImageEnd - ctx.m_ImageBase), RebuildSectionBuffer);
 
     // ctx.m_ImageRealEntry = 0x140000000;
-    if (ctx.m_ImageRealEntry)
-        ntheader->OptionalHeader.AddressOfEntryPoint = (ULONG)(ctx.m_ImageRealEntry - ctx.m_ImageBase);
+    if (ctx.m_ImageRealEntry) ntheader->OptionalHeader.AddressOfEntryPoint = (ULONG)(ctx.m_ImageRealEntry - ctx.m_ImageBase);
 
     auto dumpfile = filename + ".upeed";
 
@@ -2556,7 +2414,7 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
 
     fwrite(imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase, 1, fp);
 
-    //if (RebuildSectionBuffer.GetBuffer())
+    // if (RebuildSectionBuffer.GetBuffer())
     //    fwrite(RebuildSectionBuffer.GetBuffer(), RebuildSectionBuffer.GetLength(), 1, fp);
 
     fclose(fp);
@@ -2566,7 +2424,7 @@ int ImageDump(PeEmulation& ctx, uc_engine* uc, const std::string& filename) {
 int WritePrologue(uc_engine* uc, uintptr_t prologue_address, uintptr_t start_address, int type = 0) {
     /*
             // Copy of StackBalance to create proper stack for execution of code (prologue_address)
-        
+
             140001000  6A 01                                         push    1
             140001002  6A 02                                         push    2
             140001004  6A 03                                         push    3
@@ -2716,7 +2574,7 @@ TheBalancer:
                 jnz     short skip_balance
                 push    18h
 skip_balance:
-		jmp qword [rel TheChecker]
+        jmp qword [rel TheChecker]
 force_resume:
                 add     rsp, [rsp+8]
                 movupd  xmm15, xmmword [rsp]
@@ -2774,67 +2632,21 @@ TheChecker:
         //       0xf, 0x11, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf,
         //       0x0, 0x0, 0x0, 0x75, 0x2, 0x6a, 0x18, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0};
 
-        {
-            0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd,
-            0x3, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd, 0x3, 0xe8, 0x2, 0x0, 0x0, 0x0, 0xcd, 0x3,
-            0x41, 0x50, 0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51,
-            0x50, 0x41, 0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0,
-            0xff, 0xff, 0xff, 0x66, 0x44, 0xf, 0x11, 0x3c, 0x24, 0x66, 0xf, 0x11, 0x7c,
-            0x24, 0x10, 0x66, 0xf, 0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x11, 0x54,
-            0x24, 0x30, 0x66, 0xf, 0x11, 0x74, 0x24, 0x40, 0x66, 0xf, 0x11, 0x6c, 0x24,
-            0x50, 0x66, 0xf, 0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x11, 0x4c, 0x24,
-            0x70, 0x66, 0x44, 0xf, 0x11, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf,
-            0x11, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xa4, 0x24, 0xa0,
-            0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44,
-            0xf, 0x11, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x84, 0x24, 0xd0,
-            0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66,
-            0xf, 0x11, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf,
-            0x0, 0x0, 0x0, 0x75, 0x2, 0x6a, 0x18, 0xff, 0x25, 0xa2, 0x0, 0x0, 0x0, 0x48,
-            0x3, 0x64, 0x24, 0x8, 0x66, 0x44, 0xf, 0x10, 0x3c, 0x24, 0x66, 0xf, 0x10, 0x7c,
-            0x24, 0x10, 0x66, 0xf, 0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x10, 0x54,
-            0x24, 0x30, 0x66, 0xf, 0x10, 0x74, 0x24, 0x40, 0x66, 0xf, 0x10, 0x6c, 0x24,
-            0x50, 0x66, 0xf, 0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x10, 0x4c, 0x24,
-            0x70, 0x66, 0x44, 0xf, 0x10, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf,
-            0x10, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xa4, 0x24, 0xa0,
-            0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44,
-            0xf, 0x10, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x84, 0x24, 0xd0,
-            0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66,
-            0xf, 0x10, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x48, 0x8d, 0xa4, 0x24, 0x0, 0x1,
-            0x0, 0x0, 0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59, 0x5b,
-            0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
+        {0x6a, 0x1,  0x6a, 0x2,  0x6a, 0x3,  0x6a, 0x4,  0xe8, 0x2,  0x0,  0x0,  0x0,  0xcd, 0x3,  0xe8, 0x2,  0x0,  0x0,  0x0,  0xcd, 0x3,  0xe8, 0x2,  0x0,  0x0,  0x0,  0xcd, 0x3,  0x41, 0x50, 0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51, 0x50, 0x41, 0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0,  0xff, 0xff, 0xff, 0x66, 0x44, 0xf,  0x11, 0x3c, 0x24, 0x66, 0xf,  0x11, 0x7c, 0x24, 0x10, 0x66, 0xf,  0x11, 0x5c,
+         0x24, 0x20, 0x66, 0x44, 0xf,  0x11, 0x54, 0x24, 0x30, 0x66, 0xf,  0x11, 0x74, 0x24, 0x40, 0x66, 0xf,  0x11, 0x6c, 0x24, 0x50, 0x66, 0xf,  0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf,  0x11, 0x4c, 0x24, 0x70, 0x66, 0x44, 0xf,  0x11, 0xb4, 0x24, 0x80, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0x84, 0x24, 0x90, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0xa4, 0x24, 0xa0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x11, 0x94, 0x24, 0xb0, 0x0,  0x0,  0x0,  0x66,
+         0x44, 0xf,  0x11, 0x9c, 0x24, 0xc0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x11, 0x84, 0x24, 0xd0, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0xac, 0x24, 0xe0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x11, 0xa4, 0x24, 0xf0, 0x0,  0x0,  0x0,  0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf,  0x0,  0x0,  0x0,  0x75, 0x2,  0x6a, 0x18, 0xff, 0x25, 0xa2, 0x0,  0x0,  0x0,  0x48, 0x3,  0x64, 0x24, 0x8,  0x66, 0x44, 0xf,  0x10, 0x3c, 0x24, 0x66, 0xf,  0x10, 0x7c, 0x24, 0x10, 0x66,
+         0xf,  0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf,  0x10, 0x54, 0x24, 0x30, 0x66, 0xf,  0x10, 0x74, 0x24, 0x40, 0x66, 0xf,  0x10, 0x6c, 0x24, 0x50, 0x66, 0xf,  0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf,  0x10, 0x4c, 0x24, 0x70, 0x66, 0x44, 0xf,  0x10, 0xb4, 0x24, 0x80, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0x84, 0x24, 0x90, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0xa4, 0x24, 0xa0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x10, 0x94, 0x24, 0xb0, 0x0,
+         0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0x9c, 0x24, 0xc0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x10, 0x84, 0x24, 0xd0, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0xac, 0x24, 0xe0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x10, 0xa4, 0x24, 0xf0, 0x0,  0x0,  0x0,  0x48, 0x8d, 0xa4, 0x24, 0x0,  0x1,  0x0,  0x0,  0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59, 0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
 
-    unsigned char prologue_bytes[] = {
-        0x6a, 0x1, 0x6a, 0x2, 0x6a, 0x3, 0x6a, 0x4, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc,
-        0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc, 0xe8, 0x1, 0x0, 0x0, 0x0, 0xcc, 0x41, 0x50,
-        0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51, 0x50, 0x41,
-        0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0, 0xff, 0xff,
-        0xff, 0x66, 0x44, 0xf, 0x11, 0x3c, 0x24, 0x66, 0xf, 0x11, 0x7c, 0x24, 0x10,
-        0x66, 0xf, 0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf, 0x11, 0x54, 0x24, 0x30,
-        0x66, 0xf, 0x11, 0x74, 0x24, 0x40, 0x66, 0xf, 0x11, 0x6c, 0x24, 0x50, 0x66,
-        0xf, 0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x11, 0x4c, 0x24, 0x70, 0x66,
-        0x44, 0xf, 0x11, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0x84,
-        0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11, 0xa4, 0x24, 0xa0, 0x0, 0x0,
-        0x0, 0x66, 0xf, 0x11, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x11,
-        0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11, 0x84, 0x24, 0xd0, 0x0, 0x0,
-        0x0, 0x66, 0x44, 0xf, 0x11, 0xac, 0x24, 0xe0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x11,
-        0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf, 0x0, 0x0,
-        0x0, 0x75, 0x2, 0x6a, 0x18, 0x48, 0x83, 0xec, 0x8,
+    unsigned char prologue_bytes[] = {0x6a, 0x1,  0x6a, 0x2,  0x6a, 0x3,  0x6a, 0x4,  0xe8, 0x1,  0x0,  0x0,  0x0,  0xcc, 0xe8, 0x1,  0x0,  0x0,  0x0,  0xcc, 0xe8, 0x1,  0x0,  0x0,  0x0,  0xcc, 0x41, 0x50, 0x41, 0x55, 0x41, 0x54, 0x41, 0x57, 0x56, 0x52, 0x53, 0x41, 0x51, 0x50, 0x41, 0x56, 0x41, 0x52, 0x57, 0x41, 0x53, 0x48, 0x8d, 0xa4, 0x24, 0x0,  0xff, 0xff, 0xff, 0x66, 0x44, 0xf,  0x11, 0x3c, 0x24, 0x66, 0xf,  0x11, 0x7c, 0x24, 0x10,
+                                      0x66, 0xf,  0x11, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf,  0x11, 0x54, 0x24, 0x30, 0x66, 0xf,  0x11, 0x74, 0x24, 0x40, 0x66, 0xf,  0x11, 0x6c, 0x24, 0x50, 0x66, 0xf,  0x11, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf,  0x11, 0x4c, 0x24, 0x70, 0x66, 0x44, 0xf,  0x11, 0xb4, 0x24, 0x80, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0x84, 0x24, 0x90, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0xa4, 0x24, 0xa0, 0x0,  0x0,
+                                      0x0,  0x66, 0xf,  0x11, 0x94, 0x24, 0xb0, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0x9c, 0x24, 0xc0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x11, 0x84, 0x24, 0xd0, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x11, 0xac, 0x24, 0xe0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x11, 0xa4, 0x24, 0xf0, 0x0,  0x0,  0x0,  0x6a, 0x10, 0x48, 0xf7, 0xc4, 0xf,  0x0,  0x0,  0x0,  0x75, 0x2,  0x6a, 0x18, 0x48, 0x83, 0xec, 0x8,
 
-        0x48, 0x89, 0xe5,
+                                      0x48, 0x89, 0xe5,
 
-        0xff, 0x15, 0xa2, 0x0, 0x0,
-        0x0, 0x48, 0x3, 0x64, 0x24, 0x8, 0x66, 0x44, 0xf, 0x10, 0x3c, 0x24, 0x66, 0xf,
-        0x10, 0x7c, 0x24, 0x10, 0x66, 0xf, 0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf,
-        0x10, 0x54, 0x24, 0x30, 0x66, 0xf, 0x10, 0x74, 0x24, 0x40, 0x66, 0xf, 0x10,
-        0x6c, 0x24, 0x50, 0x66, 0xf, 0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf, 0x10,
-        0x4c, 0x24, 0x70, 0x66, 0x44, 0xf, 0x10, 0xb4, 0x24, 0x80, 0x0, 0x0, 0x0, 0x66,
-        0x44, 0xf, 0x10, 0x84, 0x24, 0x90, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xa4,
-        0x24, 0xa0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x94, 0x24, 0xb0, 0x0, 0x0, 0x0,
-        0x66, 0x44, 0xf, 0x10, 0x9c, 0x24, 0xc0, 0x0, 0x0, 0x0, 0x66, 0xf, 0x10, 0x84,
-        0x24, 0xd0, 0x0, 0x0, 0x0, 0x66, 0x44, 0xf, 0x10, 0xac, 0x24, 0xe0, 0x0, 0x0,
-        0x0, 0x66, 0xf, 0x10, 0xa4, 0x24, 0xf0, 0x0, 0x0, 0x0, 0x48, 0x8d, 0xa4, 0x24,
-        0x0, 0x1, 0x0, 0x0, 0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59,
-        0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
+                                      0xff, 0x15, 0xa2, 0x0,  0x0,  0x0,  0x48, 0x3,  0x64, 0x24, 0x8,  0x66, 0x44, 0xf,  0x10, 0x3c, 0x24, 0x66, 0xf,  0x10, 0x7c, 0x24, 0x10, 0x66, 0xf,  0x10, 0x5c, 0x24, 0x20, 0x66, 0x44, 0xf,  0x10, 0x54, 0x24, 0x30, 0x66, 0xf,  0x10, 0x74, 0x24, 0x40, 0x66, 0xf,  0x10, 0x6c, 0x24, 0x50, 0x66, 0xf,  0x10, 0x4c, 0x24, 0x60, 0x66, 0x44, 0xf,  0x10, 0x4c, 0x24, 0x70, 0x66, 0x44, 0xf,  0x10, 0xb4, 0x24,
+                                      0x80, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0x84, 0x24, 0x90, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0xa4, 0x24, 0xa0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x10, 0x94, 0x24, 0xb0, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0x9c, 0x24, 0xc0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x10, 0x84, 0x24, 0xd0, 0x0,  0x0,  0x0,  0x66, 0x44, 0xf,  0x10, 0xac, 0x24, 0xe0, 0x0,  0x0,  0x0,  0x66, 0xf,  0x10, 0xa4, 0x24,
+                                      0xf0, 0x0,  0x0,  0x0,  0x48, 0x8d, 0xa4, 0x24, 0x0,  0x1,  0x0,  0x0,  0x41, 0x5b, 0x5f, 0x41, 0x5a, 0x41, 0x5e, 0x58, 0x41, 0x59, 0x5b, 0x5a, 0x5e, 0x41, 0x5f, 0x41, 0x5c, 0x41, 0x5d, 0x41, 0x58, 0xc3};
 
     uc_err err;
     if (type == 0) {
@@ -2864,8 +2676,7 @@ void RegisterAPIs(PeEmulation& ctx) {
         ctx.RegisterAPIEmulation(L"kernel32.dll", "GetLastError", EmuGetLastError, 0);
         ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionAndSpinCount", EmuInitializeCriticalSectionAndSpinCount, 2);
 
-        if (!ctx.RegisterAPIEmulation(L"kernelbase.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3))
-            ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3);
+        if (!ctx.RegisterAPIEmulation(L"kernelbase.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3)) ctx.RegisterAPIEmulation(L"kernel32.dll", "InitializeCriticalSectionEx", EmuInitializeCriticalSectionEx, 3);
 
         ctx.RegisterAPIEmulation(L"ntdll.dll", "RtlDeleteCriticalSection", EmuDeleteCriticalSection, 1);
         ctx.RegisterAPIEmulation(L"ntdll.dll", "RtlIsProcessorFeaturePresent", EmuRtlIsProcessorFeaturePresent, 1);
@@ -2933,21 +2744,18 @@ int main(int argc, char** argv) {
     }
 
     *outs << "Positional args:\n";
-    for (auto& pos_arg : cmdl.pos_args())
-        *outs << '\t' << pos_arg << '\n';
+    for (auto& pos_arg : cmdl.pos_args()) *outs << '\t' << pos_arg << '\n';
 
     *outs << "\nFlags:\n";
-    for (auto& flag : cmdl.flags())
-        *outs << '\t' << flag << '\n';
+    for (auto& flag : cmdl.flags()) *outs << '\t' << flag << '\n';
 
     *outs << "\nParameters:\n";
-    for (auto& param : cmdl.params())
-        *outs << '\t' << param.first << " : " << param.second << '\n';
+    for (auto& param : cmdl.params()) *outs << '\t' << param.first << " : " << param.second << '\n';
 
     if (cmdl["tmp"]) {
-        //tmpname: C:\Users\sfink\AppData\Local\Temp\ss44.0
-        //fulltmpname: C:\Users\sfink\AppData\Local\Temp\ss44.1
-        //tmpdir: C:\Users\sfink\AppData\Local\Temp
+        // tmpname: C:\Users\sfink\AppData\Local\Temp\ss44.0
+        // fulltmpname: C:\Users\sfink\AppData\Local\Temp\ss44.1
+        // tmpdir: C:\Users\sfink\AppData\Local\Temp
 
         LOG("tmpname: {}", tmpname());
         LOG("fulltmpname: {}", fulltmpname());
@@ -2955,7 +2763,7 @@ int main(int argc, char** argv) {
     }
 
     //*outs << "\nValues for all multiple-use parameters:\n";
-    //for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
+    // for (const auto& param : _::uniq _VECTOR(std::string)(_::keys2(cmdl.params())))
     //    if (cmdl.params(param).size() > 1) {
     //        for (auto& param2 : cmdl.params(param))  // iterate on all params called "input"
     //            *outs << '\t' << param2.first << " : " << param2.second << '\n';
@@ -3022,7 +2830,7 @@ int main(int argc, char** argv) {
         *outs << "Saving memory reads to " << ctx.m_SaveRead << "\n";
         make_spread_folders(ctx.m_SaveRead);
     }
-    uc_engine* uc = NULL;
+    uc_engine* uc = nullptr;
     auto err      = uc_open(UC_ARCH_X86, UC_MODE_64, &uc);
     if (err) {
         printf("failed to uc_open %d\n", err);
@@ -3061,7 +2869,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    //allocate virtual stack for execution
+    // allocate virtual stack for execution
     memset(stack_buf.GetBuffer(), 0, stack_buf.GetLength());
     uc_mem_map(uc, stack, stack_size, UC_PROT_READ | UC_PROT_WRITE);
     uc_mem_write(uc, stack, stack_buf.GetBuffer(), stack_size);
@@ -3080,9 +2888,7 @@ int main(int argc, char** argv) {
 
     uc_mem_map(uc, ctx.m_HeapBase, ctx.m_HeapEnd - ctx.m_HeapBase, (ctx.m_IsKernel) ? UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC : UC_PROT_READ | UC_PROT_WRITE);
 
-    auto MapResult = ctx.thisProc.mmap().MapImage(wfilename,
-                                                  RebaseProcess | ManualImports | NoSxS | NoExceptions | NoDelayLoad | NoTLS | NoExceptions | NoExec,
-                                                  ManualMapCallback, &ctx, 0, 0x140000000, PreManualMapCallback);
+    auto MapResult = ctx.thisProc.mmap().MapImage(wfilename, RebaseProcess | ManualImports | NoSxS | NoExceptions | NoDelayLoad | NoTLS | NoExceptions | NoExec, ManualMapCallback, &ctx, nullptr, 0x140000000, PreManualMapCallback);
 
     if (!MapResult.success()) {
         printf("failed to MapImage\n");
@@ -3133,21 +2939,17 @@ int main(int argc, char** argv) {
 
     ctx.InitKSharedUserData();
 
-    //return to image end when entrypoint is executed
+    // return to image end when entrypoint is executed
     ResetRegisters(uc, ctx);
 
-    uc_hook_add(uc, &trace, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED | UC_HOOK_MEM_FETCH_PROT | UC_HOOK_MEM_WRITE_PROT,
-                InvalidRwxCallback, &ctx, 1, 0);
+    uc_hook_add(uc, &trace, UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED | UC_HOOK_MEM_FETCH_UNMAPPED | UC_HOOK_MEM_FETCH_PROT | UC_HOOK_MEM_WRITE_PROT, InvalidRwxCallback, &ctx, 1, 0);
 
-    uc_hook_add(uc, &trace2, UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH,
-                RwxCallback, &ctx, 1, 0);
+    uc_hook_add(uc, &trace2, UC_HOOK_MEM_READ | UC_HOOK_MEM_WRITE | UC_HOOK_MEM_FETCH, RwxCallback, &ctx, 1, 0);
     if (ctx.m_Disassemble || ctx.m_FindBalance) {
-        uc_hook_add(uc, &trace3, UC_HOOK_CODE,
-                    CodeCallback, &ctx, 1, 0);
+        uc_hook_add(uc, &trace3, UC_HOOK_CODE, CodeCallback, &ctx, 1, 0);
     }
 
-    uc_hook_add(uc, &trace3, UC_HOOK_INTR,
-                IntrCallback, &ctx, 1, 0);
+    uc_hook_add(uc, &trace3, UC_HOOK_INTR, IntrCallback, &ctx, 1, 0);
 
     std::vector<std::tuple<std::string, uintptr_t>> fns;
     std::vector<std::tuple<std::string, uintptr_t>> balance_fns;
@@ -3156,8 +2958,7 @@ int main(int argc, char** argv) {
         for (auto& param : cmdl.params("nasm")) {
             auto st_addr  = string_between("", ":", param.second);
             auto st_patch = string_between(":", "", param.second);
-            if (st_addr == "image_end")
-                st_addr = fmt::format("{:#x}", ctx.m_ImageEnd);
+            if (st_addr == "image_end") st_addr = fmt::format("{:#x}", ctx.m_ImageEnd);
             if (auto addr = asQword(st_addr, 16)) {
                 LOG("patching {:#x} with {}", *addr, st_patch);
                 if (pystring::startswith(st_patch, "<")) {
@@ -3197,8 +2998,7 @@ int main(int argc, char** argv) {
     for (auto& param : cmdl.params("patch")) {
         auto st_addr  = string_between("", ":", param.second);
         auto st_patch = string_between(":", "", param.second);
-        if (st_addr == "image_end")
-            st_addr = fmt::format("{:#x}", ctx.m_ImageEnd);
+        if (st_addr == "image_end") st_addr = fmt::format("{:#x}", ctx.m_ImageEnd);
         if (auto addr = asQword(st_addr, 16)) {
             LOG("patching {:#x} with {}", *addr, st_patch);
             mbs(*addr).write_pattern(st_patch.c_str());
@@ -3246,7 +3046,7 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        char* errch      = NULL;
+        char* errch      = nullptr;
         uintptr_t target = strtoull(param.second.c_str(), &errch, 16);
         if (*errch != '\0') {
             *outs << "string couldn't be converted to ll: " << param.second.c_str() << "\n";
@@ -3268,22 +3068,17 @@ int main(int argc, char** argv) {
         mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
         mem::region rr(ctx.m_ImageBase, ctx.m_ImageEnd - ctx.m_ImageBase);
 
-        auto normalise_base = [&](uintptr_t ea) {
-            return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
-        };
-        auto m_normalise_base = [&](mem::pointer& ea) {
-            return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
-        };
+        auto normalise_base   = [&](uintptr_t ea) { return r.adjust_base_to(0x140000000, ea).as<uintptr_t>(); };
+        auto m_normalise_base = [&](mem::pointer& ea) { return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>(); };
 
         // mb("6A 10 48 F7 C4 0F 00 00 00 0F 85 ?? ?? ?? ?? E9").add(11).rip()
-        auto found = scan_all_with_iteratee(r, mem::pattern("6A 10 48 F7 C4 0F 00 00 00 0F 85 ?? ?? ?? ?? E9"),
-                                            [&](mem::pointer ea) -> uintptr_t {
-                                                mem::pointer ptr(ea);
-                                                ptr = ptr.add(11).rip(4);
-                                                if (r.contains(ptr)) {
-                                                    return m_normalise_base(ptr);
-                                                }
-                                            });
+        auto found = scan_all_with_iteratee(r, mem::pattern("6A 10 48 F7 C4 0F 00 00 00 0F 85 ?? ?? ?? ?? E9"), [&](mem::pointer ea) -> uintptr_t {
+            mem::pointer ptr(ea);
+            ptr = ptr.add(11).rip(4);
+            if (r.contains(ptr)) {
+                return m_normalise_base(ptr);
+            }
+        });
 
         // sort and make unique, then add to list of functions to scan
         std::sort(found.begin(), found.end(), [](const auto& lhs, const auto& rhs) { return lhs < rhs; });
@@ -3294,7 +3089,7 @@ int main(int argc, char** argv) {
         }
         *outs << "Found " << balance_fns.size() << " matching balance functions\n";
     }
-    if (ctx.m_FindChecks) {
+    if (ctx.m_FindChecks || cmdl("find-ref")) {
         virtual_buffer_t imagebuf(ctx.m_ImageEnd - ctx.m_ImageBase);
         uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
         mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
@@ -3304,9 +3099,7 @@ int main(int argc, char** argv) {
             return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
             // return ea - (uintptr_t)imagebuf.GetBuffer() + 0x140000000;
         };
-        auto m_normalise_base = [&](mem::pointer& ea) {
-            return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
-        };
+        auto m_normalise_base = [&](mem::pointer& ea) { return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>(); };
 
         std::set<uintptr_t> find_ref_dupes;
         std::deque<uintptr_t> find_refs;
@@ -3366,7 +3159,7 @@ int main(int argc, char** argv) {
             auto abso_offset = ea.add(o_abs).rip(4);
             if (r.contains(abso_offset)) {
                 auto abso_ptr = abso_offset.as<uintptr_t&>();
-                //auto abso_ptr = abso_offset.deref();
+                // auto abso_ptr = abso_offset.deref();
                 if (rr.contains(abso_ptr)) {
                     auto abso = abso_offset.as<uintptr_t&>();
                     if (rel == abso) {
@@ -3374,9 +3167,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            *outs << fmt::format("find failed at: {:x}: rel: {:x}",
-                                 normalise_base(ea.as<uintptr_t>()), rel)
-                  << "\n";
+            *outs << fmt::format("find failed at: {:x}: rel: {:x}", normalise_base(ea.as<uintptr_t>()), rel) << "\n";
             return 0;
         };
 
@@ -3388,11 +3179,11 @@ int main(int argc, char** argv) {
             // virtual_buffer may be stored at strange location, but the image
             // itself is rebased at 0x140000000 so when extracting an absolute
             // reference, there is no need to normalise.
-            //const auto abso = ea.add(o_abs).rip(4).deref().as<uintptr_t>();
+            // const auto abso = ea.add(o_abs).rip(4).deref().as<uintptr_t>();
             auto abso_offset = ea.add(o_abs).rip(4);
             if (r.contains(abso_offset)) {
                 auto abso_ptr = abso_offset.as<uintptr_t&>();
-                //auto abso_ptr = abso_offset.deref();
+                // auto abso_ptr = abso_offset.deref();
                 if (rr.contains(abso_ptr)) {
                     auto abso = abso_offset.as<uintptr_t&>();
                     if (rel == abso) {
@@ -3401,9 +3192,7 @@ int main(int argc, char** argv) {
                 } else
                     LOG("abso_ptr: {}", abso_offset.as<uintptr_t>());
             }
-            *outs << fmt::format("find failed at: {:x}: rel: {:x}",
-                                 normalise_base(ea.as<uintptr_t>()), rel)
-                  << "\n";
+            *outs << fmt::format("find failed at: {:x}: rel: {:x}", normalise_base(ea.as<uintptr_t>()), rel) << "\n";
             return 0;
         };
 
@@ -3417,8 +3206,7 @@ int main(int argc, char** argv) {
                 else
                     // jmp short
                     ea += ea.at<int8_t>(1) + 2;
-                if (!r.contains(ea))
-                    return LOG("SKIPJMPFAILREGION1: {:x}", addr), false;
+                if (!r.contains(ea)) return LOG("SKIPJMPFAILREGION1: {:x}", addr), false;
             }
             return true;
         };
@@ -3440,13 +3228,11 @@ int main(int argc, char** argv) {
                     const auto rel = normalise_base(ea.add(o_rel).rip(4).as<uintptr_t>());
                     if (rr.contains(rel)) {
                         ea += 0x12;
-                        if (!m_skip_jmps(ea))
-                            return LOG_NOOP("FASTFAIL1: {:x}", m_normalise_base(ea)), 0;
+                        if (!m_skip_jmps(ea)) return LOG_NOOP("FASTFAIL1: {:x}", m_normalise_base(ea)), 0;
                         if ((ea.as<uint32_t&>() & 0x00ffffff) != 0x00458948)  // 'mov [rbp+0x18], rax'
                             return LOG_NOOP("FASTFAIL2: {:x}", m_normalise_base(ea)), 0;
                         ea += 4;
-                        if (!m_skip_jmps(ea))
-                            return LOG_NOOP("FASTFAIL3: {:x}", m_normalise_base(ea)), 0;
+                        if (!m_skip_jmps(ea)) return LOG_NOOP("FASTFAIL3: {:x}", m_normalise_base(ea)), 0;
                         if ((ea.as<uint32_t&>() & 0x00ffffff) != 0x00058b48)  // 'mov rax, [rel off_146C028B2]'
                             return LOG_NOOP("FASTFAIL4: {:x}", m_normalise_base(ea)), 0;
                         abso_ptr = ea.add(3).rip(4);
@@ -3528,18 +3314,13 @@ int main(int argc, char** argv) {
                         *outs << std::hex << address << "\t\t" << std::dec << insn.mnemonic << "\t\t" << op_string << "\n";
 
                         FuncTailInsn fti;
-                        fti.ea(address)
-                            .text(fmt::format("{} {}", insn.mnemonic, op_string))
-                            .size(size)
-                            .code(std::string((char*)codeBuffer, size))
-                            .mnemonic(insn.mnemonic)
-                            .operands(op_string);
+                        fti.ea(address).text(fmt::format("{} {}", insn.mnemonic, op_string)).size(size).code(std::string((char*)codeBuffer, size)).mnemonic(insn.mnemonic).operands(op_string);
 
                         insns.emplace_back(std::move(fti));
 
                         if (!strcmp(insn.mnemonic, "jmp")) {
                             address += insn.size + mem::pointer(code - 4).as<int32_t&>();
-                            //if (insn.detail->x86.op_count) {
+                            // if (insn.detail->x86.op_count) {
                             //    *outs << "jmp has no opcount\n";
                             //    break;
                             //}
@@ -3570,12 +3351,8 @@ int main(int argc, char** argv) {
                 uc_mem_read(uc, ctx.m_ImageBase, imagebuf.GetBuffer(), ctx.m_ImageEnd - ctx.m_ImageBase);
                 mem::region r(imagebuf.GetBuffer(), imagebuf.GetLength());
 
-                auto normalise_base = [&](uintptr_t ea) {
-                    return r.adjust_base_to(0x140000000, ea).as<uintptr_t>();
-                };
-                auto m_normalise_base = [&](mbs& ea) {
-                    return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>();
-                };
+                auto normalise_base   = [&](uintptr_t ea) { return r.adjust_base_to(0x140000000, ea).as<uintptr_t>(); };
+                auto m_normalise_base = [&](mbs& ea) { return r.adjust_base_to(0x140000000, ea.as<uintptr_t>()).as<uintptr_t>(); };
                 // mem("55 48 81 ec b0").find("3b c2 0f 85", 128).add(4).rip(4).matches("c7 45", 2).dword()
                 // m = mem(FindInSegments("48 89 6c 24 f8 48 8d 64 24 f8")).find("3b c2 0f 85", 128).add(4).rip(4).is_match("c7 45 64 01 00 00 00", 7)
                 // m = [x for x in [mem(ea).add(4).rip(4).is_match("c7 45 .. 01 00 00 00", 7) for ea in FindInSegments("3b c2 0f 85")] if not x.in_error()]
@@ -3709,7 +3486,7 @@ int main(int argc, char** argv) {
                     }
                     return 0;
                 };
-                //mem::pattern p("55 48 81 ec b0");
+                // mem::pattern p("55 48 81 ec b0");
                 //         if (auto found = mem::scan(p, r)) {
                 //             iteratee(found);
                 //         }
@@ -3724,12 +3501,12 @@ int main(int argc, char** argv) {
         // mbs(0x14384BE32).jmp(0x143612F8C);  // skip tamper and segment check
 
         // mbs(0x140d8d394).nop(5);            // skip making all segments writable
-        //mbs(0x143bbdb2f).jmp(0x140D03816);  // skip executable tamper check
-        //mbs(0x141894D99).jmp(0x143A99FEE);  // skip segment size check
+        // mbs(0x143bbdb2f).jmp(0x140D03816);  // skip executable tamper check
+        // mbs(0x141894D99).jmp(0x143A99FEE);  // skip segment size check
         // mbs(0x1417db93c).jmp(0x1417ed648); // skip initial decrypt
         // mbs(0x144874514).write_pattern("c3");
 
-        //for d, s in zip(dst, src) : ida_bytes.patch_bytes(d[0], ida_bytes.get_bytes(s[0], s[1]))
+        // for d, s in zip(dst, src) : ida_bytes.patch_bytes(d[0], ida_bytes.get_bytes(s[0], s[1]))
         ResetRegisters(uc, ctx);
 
         *outs << "Function: " << ctx.filename << "\n";
@@ -3784,6 +3561,8 @@ int main(int argc, char** argv) {
             tryAndReadJson((fs::path(ctx.m_SaveWritten) / "files.json").string(), json_written, {});
         }
         for (const auto& tpl : fns) {
+            auto ori_sandbox                 = ctx.m_Sandbox;
+            ctx.m_Sandbox                    = false;
             ctx.filename                     = std::get<0>(tpl);
             uintptr_t start_address          = std::get<1>(tpl);
             uintptr_t base_address           = ctx.m_ImageEnd;
@@ -3807,6 +3586,7 @@ int main(int argc, char** argv) {
             }
             uintptr_t fn_address = std::get<1>(tpl);
             SaveResult(uc, fn_address, ctx, &json_written);
+            ctx.m_Sandbox = ori_sandbox;
         }
         for (const auto& tpl : balance_fns) {
             ctx.filename                     = std::get<0>(tpl);
@@ -3835,8 +3615,7 @@ int main(int argc, char** argv) {
                 break;
             }
             uintptr_t fn_address = std::get<1>(tpl);
-            if (ctx.m_BalanceEntry)
-                fn_address = ctx.m_BalanceEntry;
+            if (ctx.m_BalanceEntry) fn_address = ctx.m_BalanceEntry;
             SaveResult(uc, fn_address, ctx, &json_written);
         }
         if (!ctx.m_SaveWritten.empty()) {
@@ -3859,7 +3638,7 @@ int main(int argc, char** argv) {
 
     *outs << "uc_emu_start return: " << std::dec << err << std::endl;
     *outs << "entrypoint return: " << std::hex << result_rax << std::endl;
-    *outs << "last rip: " << std::hex << ctx.m_LastRip;
+    *outs << "last rip: " << std::hex << ctx.m_LastRip << std::endl;
 
     outs->flush();
     timer.ShowElapsed();
@@ -3872,17 +3651,15 @@ int main(int argc, char** argv) {
     ctx.thisProc.mmap().UnmapAllModules();
 
     std::stringstream rip_region, realentry_region;
-    if (ctx.FindAddressInRegion(ctx.m_LastRip, rip_region))
-        *outs << " (" << rip_region.str() << ")\n";
+    if (ctx.FindAddressInRegion(ctx.m_LastRip, rip_region)) *outs << " (" << rip_region.str() << ")\n";
 
     if (ctx.m_ImageRealEntry) {
-        if (ctx.FindAddressInRegion(ctx.m_ImageRealEntry, realentry_region))
-            *outs << "real entrypoint: " << realentry_region.str() << "\n";
+        if (ctx.FindAddressInRegion(ctx.m_ImageRealEntry, realentry_region)) *outs << "real entrypoint: " << realentry_region.str() << "\n";
     }
 
     *outs << "flushing...\n";
-    //std::string k;
-    //std::cin >> k;
+    // std::string k;
+    // std::cin >> k;
     *outs << "forcing exit now" << std::endl;
     outs->flush();
     // _exit() abort() std::terminate()
@@ -3906,10 +3683,14 @@ std::string lnva(const char* format, const Args&... args) {
 void mem_parser(PeEmulation& ctx, const std::string& _line, uintptr_t& _RESULT, argh::parser& cmdl) {
     // to be written-ish
     std::deque<mem::pointer> stack;
-    //auto normalise_base   = [&](uintptr_t n) -> uintptr_t { return n; };
+    // auto normalise_base   = [&](uintptr_t n) -> uintptr_t { return n; };
     auto safe_dereference = [&](uintptr_t) -> bool { return true; };
     auto push             = [&](mem::pointer p) -> void { stack.emplace_back(p); };
-    auto pop              = [&]() -> mem::pointer { auto r = stack.back(); stack.pop_back(); return r; };
+    auto pop              = [&]() -> mem::pointer {
+        auto r = stack.back();
+        stack.pop_back();
+        return r;
+    };
     // end to be written
 
     auto parser = pogo::WhitespaceTokeniser("dummy line");
@@ -3946,10 +3727,9 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
     mem::pointer ptr(unnormalise_base(_RESULT));
 
     for (auto cmd = parser.current; !parser.eof(); cmd = parser.next) {
-        //LOG("mem::ptr {:#x}", m_normalise_base(ptr));
-        if (cmd.empty())
-            break;
-        //LOG("cmd: {}", cmd);
+        // LOG("mem::ptr {:#x}", m_normalise_base(ptr));
+        if (cmd.empty()) break;
+        // LOG("cmd: {}", cmd);
         if (cmd == "alloc") {
             if (!parser.empty()) {
                 if (auto _size = asQword(parser.next, 10)) {
@@ -4004,9 +3784,8 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                     lnva("Invalid type for \"as\" - \"%s\"", _type.c_str());
                     return;
                 }
-                auto _unsigned = matches[1] == "u";
-                int_fast8_t _bits =
-                    matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
+                auto _unsigned    = matches[1] == "u";
+                int_fast8_t _bits = matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
 
                 if (_unsigned)
                     _RESULT = ptr.as<uint64_t&>() & ((1 << (64 - _bits)) - 1);
@@ -4068,22 +3847,21 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                     lnva("Invalid type for \"as\" - \"%s\"", _type.c_str());
                     return;
                 }
-                auto _unsigned = matches[1] == "u";
-                int_fast8_t _bits =
-                    matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
+                auto _unsigned    = matches[1] == "u";
+                int_fast8_t _bits = matches[2] == "ptr" ? 64 : (int_fast8_t)strtoul(matches[2].c_str(), nullptr, 10);
 
                 if (_unsigned) {
-                    //LOG("reading current value from {:#x} ({:#x})", ptr.as<uint64_t>(), m_normalise_base(ptr));
+                    // LOG("reading current value from {:#x} ({:#x})", ptr.as<uint64_t>(), m_normalise_base(ptr));
                     auto current_value_64 = ptr.as<uint64_t&>();
-                    //LOG("current_value_64: {:#x}", current_value_64);
+                    // LOG("current_value_64: {:#x}", current_value_64);
                     auto write    = *_value;
                     auto bit_mask = _bits == 64 ? -1 : (1 << (64 - _bits)) - 1;
-                    //LOG("writing         : {:#x} & {:#x}", write, bit_mask);
+                    // LOG("writing         : {:#x} & {:#x}", write, bit_mask);
                     auto new_value_64 = (current_value_64 & ~bit_mask) | (write & bit_mask);
-                    //LOG("new_value_64    : {:#x}", new_value_64);
+                    // LOG("new_value_64    : {:#x}", new_value_64);
                     ptr.as<uint64_t&>() = new_value_64;
 
-                    //ptr.as<uint64_t&>() = (ptr.as<uint64_t&>() & ~((1 << (64 - _bits)) - 1)) |
+                    // ptr.as<uint64_t&>() = (ptr.as<uint64_t&>() & ~((1 << (64 - _bits)) - 1)) |
                     //	  							    (*_value &  ((1 << (64 - _bits)) - 1));
                     ptr += _bits / 8;
                     lnva("%-8s %-8s 0x%llx", cmd.c_str(), _type.c_str(), m_normalise_base(ptr));
@@ -4119,12 +3897,10 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
                     subject = pystring::rstrip(file_get_contents(subject.substr(1)));
                 }
                 // trim off surrounding 's
-                //auto tmp_parser = pogo::WhitespaceTokeniser(subject.substr(1, subject.size() - 2));
+                // auto tmp_parser = pogo::WhitespaceTokeniser(subject.substr(1, subject.size() - 2));
                 LOG("adding to queue {} times: {}", *_times, subject);
                 auto tmp_parser = pogo::WhitespaceTokeniser(subject);
-                _::timesSimple(*_times, [&] {
-                    parser.insert(tmp_parser.slice(0));
-                });
+                _::timesSimple(*_times, [&] { parser.insert(tmp_parser.slice(0)); });
             }
         } else if (cmd == "push_param") {
             std::string subject = parser.next;
@@ -4150,11 +3926,11 @@ size_type ::= [u|]int[[8|16|32|64|ptr]_t]
 https://github.com/sfinktah/unicorn_pe  -- there's a built copy in x64/releases, and to build it yourself you will need `vcpkg install boost:x64-windows-static fmt:x64-windows-static nlohmann-json:x64-windows-static` or something to that effect.  The other things are included (capstone, blackbone, unicorn).
 
 To extract blobs from a dumped binary:
-`/path/to/unicorn_pe.exe dumped.exe --decrypt --save-written=test1` where test1 is a folder that exists (or it will be made for you) underneath where-ever you keep you .i64 file 
+`/path/to/unicorn_pe.exe dumped.exe --decrypt --save-written=test1` where test1 is a folder that exists (or it will be made for you) underneath where-ever you keep you .i64 file
 
 To extract a non-dumped binary
 ```
-/path/to/unicorn_pe.exe retail.exe --unpack 
+/path/to/unicorn_pe.exe retail.exe --unpack
 ```
 
 `--unpack` mode can also take a `save-written=<unpack_folder>` argument to create individual blobs.

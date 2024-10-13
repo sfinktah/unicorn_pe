@@ -4,6 +4,8 @@
 #include <iostream>
 #include <optional>
 #include <functional>
+#include <fmt/format.h>
+#include <fmt/printf.h>
 #include "maclog.h"
 #include "Filesystem.hpp"
 
@@ -49,7 +51,7 @@ using vector_pair_wstring    = std::vector<std::pair<std::wstring, std::wstring>
 using vector_vector_wstring  = std::vector<vector_wstring>;
 
 //std::string GetModuleName(const HMODULE module);
-fs::path GetModulePath(std::string name);
+fs::path GetModulePath(const std::string& name);
 
 //inline std::pair<HMODULE, size_t> g_ProcessRange;
 
@@ -165,7 +167,7 @@ int stripos(const T& haystack, const T& needle, const std::locale& loc = std::lo
 #define STRING_BETWEEN_TRIM_RESULT (STRING_BETWEEN_LTRIM_RESULT | STRING_BETWEEN_RTRIM_RESULT)
 
 std::string string_between(const std::string& left, const std::string& right, const std::string& subject, int flags = {},
-                           std::function<std::string(std::string)> repl = nullptr);
+                           const std::function<std::string(std::string)>& repl                                      = nullptr);
 
 inline std::string string_between_replace(const std::string& left, const std::string& right, const std::string& subject,
                                           std::function<std::string(std::string)> repl, int flags = {}) {
@@ -213,7 +215,7 @@ std::vector<std::string> preg_split_string_view(const std::string& pattern, cons
 std::vector<std::string> preg_split_inverse(const std::string& input, const std::string& regex, int limit = LONG_MAX, int flags = 0);
 
 #define PREG_MATCH_IGNORE_CASE (1 << 0)
-int preg_match_all(std::string pattern, std::string subject, std::vector<std::string>& matches, int flags = 0, int offset = 0);
+int preg_match_all(const std::string& pattern, std::string subject, std::vector<std::string>& matches, int flags = 0, int offset = 0);
 #ifdef USE_BOOST
 int sregex_match(const std::string& pattern, const std::string& subject, std::vector<std::string>* matches = nullptr, int flags = 0);
 #endif
@@ -396,8 +398,10 @@ std::optional<bool> asBool(const std::string& arg);
 std::string file_get_contents(cref_string filename);
 std::vector<uint8_t> file_get_contents_bin(cref_string filename);
 size_t file_put_contents(const std::string& filename, const char* start, size_t length, size_t member_size = 1);
-fs::path spread_filename(fs::path path);
-void make_spread_folders(fs::path path);
+size_t file_put_contents_if_changed(const std::string& filename, const char* start, size_t length, size_t member_size = 1);
+fs::path spread_filename(const fs::path& path);
+fs::path path_combine(const fs::path& path1, const fs::path& path2);
+void make_spread_folders(const fs::path& path);
 
 class Timer {
 public:

@@ -3,6 +3,7 @@
 #ifdef COMPILER_MSVC
 
 #include "../Include/Winheaders.h"
+#include <string>
 
 #include <map>
 

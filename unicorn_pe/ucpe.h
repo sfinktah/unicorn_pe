@@ -1,4 +1,6 @@
 #pragma once
+//#include <unicorn/unicorn.h>
+//#include <capstone/capstone.h>
 
 using api_emu_callback = std::function<bool(uc_engine *uc)>;
 
@@ -277,7 +279,9 @@ public:
 	bool m_Unpack;
 	bool m_Obfu;
 	bool m_SkipSecondCall;
-	bool m_SkipFourthCall;;
+	bool m_SkipFourthCall;
+    uint64_t CurrentInstruction;
+    uint32_t CurrentInstructionLength;;
 	bool m_PatchRuntime;
 	bool m_RebuildImageSize = false;
 	bool m_RebuildSectionSizes = false;
@@ -335,11 +339,14 @@ public:
 
 	std::string m_SaveWritten;
 	std::string m_SaveRead;
+	std::string m_SaveReadRanges;
+	std::string m_SaveWrittenRanges;
 
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Undo;
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Written;
 	std::vector<std::tuple<uintptr_t, uint8_t>> m_Read;
 	std::vector<bool> m_WrittenBitmap;
+	std::vector<bool> m_ReadBitmap;
 	std::vector<uintptr_t> m_StartAddresses;
 	std::vector<std::tuple<uintptr_t, uintptr_t>> m_Calls;
 };

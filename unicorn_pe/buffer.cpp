@@ -9,6 +9,10 @@ virtual_buffer_t::virtual_buffer_t(size_t size) : m_cbSize(size), m_pBuffer(Virt
 {
 }
 
+virtual_buffer_based_t::virtual_buffer_based_t(size_t size, uintptr_t base) : virtual_buffer_t(size), m_base(base)
+{
+}
+
 virtual_buffer_t::~virtual_buffer_t()
 {
 	if (m_pBuffer)

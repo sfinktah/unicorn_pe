@@ -32,7 +32,7 @@ using namespace std::literals::chrono_literals;
 //#define Process32Next Process32Next
 #endif
 
-fs::path GetModulePath(std::string name) {
+fs::path GetModulePath(const std::string& name) {
     auto module = GetModuleHandleA(name.c_str());
     char fileName[MAX_PATH];
     GetModuleFileNameA(module, fileName, MAX_PATH);
@@ -180,7 +180,7 @@ std::string string_between_splice(const std::string& left, const std::string& ri
 /// <returns> brown </returns>
 /// <remarks>Use an empty string to signify the beginning or end of the string</remarks>
 std::string string_between(const std::string& left, const std::string& right, const std::string& subject, int flags,
-                           std::function<std::string(std::string)> repl) {
+                           const std::function<std::string(std::string)>& repl) {
     const bool inclusive    = flags & STRING_BETWEEN_INCLUSIVE;
     const bool greedy       = flags & STRING_BETWEEN_GREEDY;
     const bool ltrim_result = flags & STRING_BETWEEN_LTRIM_RESULT;
@@ -367,7 +367,7 @@ std::vector<std::string> preg_split_string_view(const std::string& pattern, cons
 /// <param name="offset">Normally, the search starts from the beginning of the subject string. The optional parameter
 /// offset can be used to specify the alternate place from which to start the search (in bytes)</param> <returns>Returns
 /// the number of full pattern matches (which might be zero), or -1 if an error occurred</returns>
-int preg_match_all(std::string pattern, std::string subject, std::vector<std::string>& matches, int flags, int offset) {
+int preg_match_all(const std::string& pattern, std::string subject, std::vector<std::string>& matches, int flags, int offset) {
     // cobbled together from bits found at http://en.cppreference.com/w/cpp/regex/std::regex_search by sfink
     // (see also std::regex_iterator)
     int count = 0;
@@ -563,6 +563,38 @@ size_t file_put_contents(const std::string& filename, const char* start, size_t 
     return 0;
 }
 
+std::optional<std::size_t> filesize(const std::filesystem::path& p) {
+    try {
+        return fs::file_size(p);
+    }
+    catch (fs::filesystem_error& e) {
+        // std::cout << e.what() << '\n';
+        return std::nullopt;
+    }
+}
+
+size_t file_put_contents_if_changed(const std::string& filename, const char* start, size_t length, size_t member_size) {
+    // first check if filesize is different, or file does not exist
+    if (auto size = filesize(filename)) {
+        // if filesize is different, proceed to write
+        if (*size != length * member_size)
+            return file_put_contents(filename, start, length, member_size);
+
+        // filesize is the same, check contents
+        auto tmp = file_get_contents(filename);
+        auto len = tmp.size();
+        for (size_t i=0; i<len; ++i) {
+            if (tmp[i] != start[i]) 
+                return file_put_contents(filename, start, length, member_size);
+        }
+
+        // file contents must be the same, skip write
+        return len;
+    }
+    // if file does not exist, proceed to write
+    return file_put_contents(filename, start, length, member_size);
+}
+
 // throws std::ifstream::failure
 std::string file_get_contents(cref_string filename) {
     std::ifstream file;
@@ -603,7 +635,7 @@ std::vector<uint8_t> file_get_contents_bin(cref_string filename) {
 }
 
 
-fs::path spread_filename(fs::path path) {
+fs::path spread_filename(const fs::path& path) {
     auto dn = dirname(path);
     auto bn = basename(path);
     //auto dn = os::path::dirname(path.string());
@@ -622,7 +654,16 @@ fs::path spread_filename(fs::path path) {
     //return os::path::join(dstpath, bn);
 }
 
-void make_spread_folders(fs::path path) {
+fs::path path_combine(const fs::path& path1, const fs::path& path2) {
+    //auto dn = os::path::dirname(path.string());
+    //auto bn = os::path::basename(path.string());
+    //std::vector<std::string> subdirs;
+    return path1 / path2;
+    //auto dstpath = os::path::join(dn, os::path::join(subdirs));
+    //return os::path::join(dstpath, bn);
+}
+
+void make_spread_folders(const fs::path& path) {
     if (fs::is_directory(path)) {
         for (int i = 0; i < 64; ++i) {
             auto path1 = path / fmt::format("{:02}", i);
@@ -714,9 +755,9 @@ std::optional<uint32_t> asDword(const std::string& arg, int default_base) {
     return std::nullopt;
 }
 
-std::optional<bool> asBool(const std::string& rest) {
-    if (auto match = regex_search("^(1|enable|enabled|on|true|yes)$", rest, true); !match.empty()) return true;
-    if (auto match = regex_search("^(0|disable|disabled|off|false|no)$", rest, true); !match.empty()) return false;
+std::optional<bool> asBool(const std::string& arg) {
+    if (auto match = regex_search("^(1|enable|enabled|on|true|yes)$", arg, true); !match.empty()) return true;
+    if (auto match = regex_search("^(0|disable|disabled|off|false|no)$", arg, true); !match.empty()) return false;
     return std::nullopt;
 }
 

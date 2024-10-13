@@ -6,7 +6,7 @@
 
 #include <iostream>
 #include <sstream>
-#include <fstream>
+//#include <fstream>
 #include <functional>
 #include <algorithm>
 #include <vector>
@@ -18,7 +18,7 @@
 #include "encode.h"
 #include "nativestructs.h"
 #include "ucpe.h"
-#include "emuapi.h"
+//#include "emuapi.h"
 #include "iat.h"
 
 extern "C" {

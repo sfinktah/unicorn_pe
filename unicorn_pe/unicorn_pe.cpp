@@ -23,6 +23,7 @@
 
 #include <fmt/format.h>
 #include <fmt/printf.h>
+#include <lodash/026_slice.h>
 #include <pystring/pystring.h>
 #include "sniffing/nowide/convert.hpp"
 using namespace nowide;
@@ -39,24 +40,20 @@ using namespace nowide;
 #include "Filesystem.hpp"
 #include "FuncTailInsn.h"
 #include "util.hpp"
+#include "distorm_plug.h"
+#include "multimatches.h"
 
 #include "./argh.h"
 #include "../vendor/mem/include/mem/mem.h"
-#include "../vendor/mem/include/mem/module.h"
 #include "../vendor/mem/include/mem/pattern.h"
-#include "../vendor/mem/include/mem/protect.h"
 #include <nlohmann/json.hpp>
 #include "sniffing/HexDump.h"
 #include "membricksafe.hpp"
-//#include "../vendor/lodash/071_join.h"
-//#include "../vendor/lodash/001_each.h"
-//#include "../vendor/lodash/024_keys.h"
-//#include "../vendor/lodash/026_slice.h"
 #include "../vendor/lodash/071_join.h"
 #include "../vendor/lodash/075_first.h"
 #include "../vendor/lodash/095_uniq.h"
 #include "../vendor/lodash/121_times.h"
-#include "multimatch.h"
+#include "s_multimatch.h"
 #include "MegaFunc.h"
 #include "BraceExpander.h"
 #include "WhitespaceTokeniser.h"
@@ -81,15 +78,8 @@ std::ostream* outs;
 //#define LOG(X, ...) (*outs << fmt::format((X), ##__VA_ARGS__) << "\n")
 
 extern "C" {
-NTSYSAPI
-PIMAGE_NT_HEADERS
-NTAPI
-RtlImageNtHeader(IN PVOID BaseAddress);
-
-NTSYSAPI
-PVOID
-NTAPI
-RtlImageDirectoryEntryToData(PVOID BaseAddress, BOOLEAN MappedAsImage, USHORT Directory, PULONG Size);
+    NTSYSAPI PIMAGE_NT_HEADERS NTAPI RtlImageNtHeader(IN PVOID BaseAddress);
+    NTSYSAPI PVOID NTAPI RtlImageDirectoryEntryToData(PVOID BaseAddress, BOOLEAN MappedAsImage, USHORT Directory, PULONG Size);
 }
 
 void* patch_nops(void* ptr, size_t count);
@@ -676,7 +666,7 @@ void PeEmulation::MapImageToEngine(const std::wstring& ImageName, PVOID ImageBas
 
 #ifdef USE_BOOST
 // CircularBuffer<FuncTailInsn, 128> history;
-static boost::circular_buffer<FuncTailInsn> history(16);
+static boost::circular_buffer<FuncTailInsn> history(32);
 #endif
 
 void advance_rip(uc_engine* uc, int offset) {
@@ -754,6 +744,114 @@ static std::set<uintptr_t> visited;
 static std::map<std::string, size_t> insn_count;
 static std::set<uintptr_t> call_targets;
 
+size_t Disassemble(uc_engine* uc, uint64_t address, uint32_t size, void* user_data) {
+    PeEmulation* ctx = (PeEmulation*)user_data;
+
+    /*uc_reg_read(uc, UC_X86_REG_EFLAGS, &ctx->m_InitReg.EFlags);
+    ctx->m_InitReg.EFlags |= (1 << 8);
+    uc_reg_write(uc, UC_X86_REG_EFLAGS, &ctx->m_InitReg.EFlags);*/
+
+    const uint64_t virtualBase    = ctx->NormaliseBase(address);
+    mem::region rr(ctx->m_ImageBase, ctx->m_ImageEnd - ctx->m_ImageBase);
+    auto ripadd = [&](const std::string& str, uintptr_t rip, uintptr_t& abso) {
+        if (~pystring::find(str, "[rip ")) {
+            auto splut = preg_split(" ([-+]) ", pystring::rstrip(str, "]"), MAXINT, PREG_SPLIT_DELIM_CAPTURE);
+            if (splut.size() == 3) {
+                abso = (rip + parseInt(pystring::strip(splut[1]) + splut[2], 16));
+                // LOG("abso: {:x}", abso);
+                return fmt::format("[rel {:#x}]", abso);
+            }
+        }
+        return str;
+    };
+
+    auto [it, suc] = visited.emplace(address);
+    if (suc) {
+
+        unsigned char codeBuffer[15];
+        uc_mem_read(uc, address, codeBuffer, size);
+
+        cs_insn* insn;
+        // memset(&insn, 0, sizeof(insn));
+
+        int64_t rsp;
+        uc_reg_read(uc, UC_X86_REG_RSP, &rsp);
+        uint8_t* code = codeBuffer;
+        size_t codeSize = size;
+        auto count = cs_disasm(ctx->m_cs, code, codeSize, virtualBase, 0, &insn);
+        if (count) {
+            int ii = 0;
+
+            std::string op_string = insn[ii].op_str;
+            // regex = r"\b(rip[+-]0x[0-9a-f]+)"
+            // operand = re.sub(regex, lambda m: ripadd(m.group(), ea + size), operand, 0, re.IGNORECASE)
+            uintptr_t rip_rel_addr = 0;
+            if (~pystring::find(op_string, "[rip ")) {
+                std::vector<std::string> splut;
+                pystring::split(op_string, splut, ", ");
+                op_string = _::join_array(_::map2(splut, [&](const std::string& s) { return ripadd(s, ctx->NormaliseBase(address + insn->size), rip_rel_addr); }), ", ");
+            }
+
+            op_string = preg_replace(" ([-+]) ", R"($1)", op_string.c_str());
+            auto mnem = insn[ii].mnemonic;
+            std::string mnem_str(mnem);
+            auto disasm = pystring::rstrip(fmt::format("{} {}", mnem, op_string));
+
+            {
+                auto op_string2 = regex_replace(op_string, std::regex(R"(\b0x14[0-9a-fA-F]{7})"), [=](const std::smatch& m) {
+                    auto match = m.str();
+                    auto index = m.position();
+                    std::string prefix(m.str());
+                    prefix += ":";
+
+                    // TODO: these won't work if base is not 0x140000000
+                    if (auto _addr = asQword(match.c_str(), 16)) {
+                        uintptr_t addr = *_addr;
+                        uintptr_t next_addr = 0;
+
+                        while (UC_ERR_OK == uc_mem_read(ctx->m_uc, addr, &next_addr, 8)) {
+                            if (auto it = megaFuncNames.find(ctx->NormaliseBase(addr, 0)); it != megaFuncNames.end()) {
+                                return fmt::format("{}{}", prefix, it->second);
+                            }
+                            if (megafunc && megafunc->Contains(ctx->NormaliseBase(addr, 0))) {
+                                return pystring::rstrip(megafunc->Lookup(ctx->NormaliseBase(addr, 0)));
+                            }
+
+                            std::wstring DllName;
+                            FakeAPI_t* api = nullptr;
+                            if (ctx->FindAPIByAddress(addr, DllName, &api)) {
+                                return fmt::format("{}{}!{}", prefix, narrow(DllName), api->ProcedureName);
+                            }
+
+                            prefix += "&";
+                            addr = next_addr;
+                        }
+                    }
+                    return match;
+                    });
+
+                std::stringstream region2;
+                if (ctx->FindAddressInRegion(address, region2)) {
+                    if (megafunc)
+                        *outs << megafunc->Lookup(virtualBase - 0x140000000) << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << mnem << "\t\t" << op_string2 << "\n";
+                    else
+                        *outs << std::hex << region2.str() << "\t\t" << std::hex << 0x50000 - rsp << "\t" << std::dec << mnem << "\t\t" << op_string2 << "\n";
+                }
+                else {
+                    *outs << std::hex << virtualBase << "\t\t" << 0x50000 - rsp << "\t" << std::dec << mnem << "\t\t" << op_string2 << "\n";
+                }
+                cs_free(insn, count);
+            }
+        }
+        else {
+            *outs << "No count: " << std::hex << address << std::dec << " " << size << " " << HexDump::dumpMemory((uint8_t*)address, size);
+        }
+        return count;
+    }
+    return -1;
+}
+
+
 static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* user_data) {
     PeEmulation* ctx = (PeEmulation*)user_data;
 
@@ -762,6 +860,9 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
     uc_reg_write(uc, UC_X86_REG_EFLAGS, &ctx->m_InitReg.EFlags);*/
 
     ctx->FlushMemMapping();
+
+    ctx->CurrentInstruction = address;
+    ctx->CurrentInstructionLength = size;
 
     if (ctx->m_Disassemble || ctx->m_RewriteRsp) {
         static bool was_disassembling = true;
@@ -780,10 +881,54 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
         };
 
         auto [it, suc] = visited.emplace(address);
+#ifdef USE_BOOST
+        if (suc && (ctx->m_Disassemble)) {
+            unsigned char codeBuffer[15];
+            uc_mem_read(uc, address, codeBuffer, size);
+
+            virtual_buffer_based_t vbuf(size, address);
+            memcpy(vbuf.GetBuffer(), codeBuffer, size);
+            emu_disassemble(vbuf, 0, 0, [&](const FuncTailInsn& fti) {
+                m_Instructions.emplace_back(fti);
+                size_t index = m_Instructions.size() - 1;
+                *outs << color_disasm(pystring::lower(fti.asString())) << std::endl;
+                if (pystring::startswith(fti.asString(), "jmp 0x") ||
+                    pystring::startswith(fti.asString(), "nop")
+                ) {
+                    __nop();
+                }
+                else {
+                    for (auto& mm : multimatches) {
+                        mm.test(m_Instructions, index, fti);
+                    }
+                }
+
+
+                return false;
+                });
+        }
+#endif
+
         if (suc && (ctx->m_DisassembleForce || ctx->m_RewriteRsp)) {
             was_disassembling = true;
             unsigned char codeBuffer[15];
             uc_mem_read(uc, address, codeBuffer, size);
+
+#ifdef USE_BOOST
+            virtual_buffer_based_t vbuf(size, address);
+            memcpy(vbuf.GetBuffer(), codeBuffer, size);
+            emu_disassemble(vbuf, 0, 0, [&](const FuncTailInsn& fti) {
+                m_Instructions.emplace_back(fti);
+                size_t index = m_Instructions.size() - 1;
+                *outs << pystring::lower(fti.asString()) << std::endl;
+                for (auto& mm : multimatches) {
+                    mm.test(m_Instructions, index, fti);
+                }
+
+
+                return false;
+            });
+#endif
 
             cs_insn* insn;
             // memset(&insn, 0, sizeof(insn));
@@ -827,12 +972,14 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                     if (e_rsp == 0x1f0 && mnem_str == "call") {
                         // This really shouldn't be needed, but... hmmmm
                         last_self_ptr = parseUint(op_string, 16);
+                        ctx->m_BalanceEntry = last_self_ptr;
                         LOG("call {:x}", last_self_ptr);
                     } else if (e_rsp == 0x200 && !ctx->m_RewriteRspDone) {
                         ctx->m_RewriteRspDone   = true;
                         uintptr_t resume_target = ctx->m_ImageEnd + 0x100 + 0x144b741c6 - 0x144b74100 + 6;
                         uc_mem_write(uc, 0x50000 - 0x1f8, &resume_target, sizeof(resume_target));
-                        ctx->m_BalanceEntry = virtualBase;
+                        if (!ctx->m_BalanceEntry)
+                            ctx->m_BalanceEntry = virtualBase;
                         LOG("rewrote RSP to {:x}", resume_target);
                     } else if (e_rsp > 0x200) {
                         if (rip_rel_addr && (mnem_str == "lea" || mnem_str == "mov") && op_string[0] == 'r') {
@@ -844,12 +991,23 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                 this_ptr = uc_qword(uc, rip_rel_addr);
                                 // LOG("mov: {:x}", this_ptr);
                             }
-                            LOG("address is {:x}", this_ptr);
+                            LOG("lea/mov target address is {:x}", this_ptr);
                             if (this_ptr != 0x140000000) {
+                                if (ctx->m_BalanceEntry) {
+                                    LOG("already set starting address to {:x}", ctx->m_BalanceEntry);
+                                }
                                 if (this_ptr == last_self_ptr) {
-                                    ctx->m_BalanceEntry = this_ptr;
+                                    if (!ctx->m_BalanceEntry) {
+                                        ctx->m_BalanceEntry = this_ptr;
+                                    }
                                     ctx->m_RewriteRsp   = false;
-                                    LOG("starting address is {:x}", this_ptr);
+                                    if (this_ptr == ctx->m_BalanceEntry) {
+                                        LOG("starting address confirmed as {:x}", this_ptr);
+                                        
+                                    }
+                                    else {
+                                        LOG("starting address is {:x}", this_ptr);
+                                    }
                                 } else {
                                     LOG("tentative starting address is {:x}", this_ptr);
                                     last_self_ptr = this_ptr;
@@ -936,10 +1094,12 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                 }
 #ifdef USE_BOOST
                 if (ctx->m_Obfu) {
+#ifdef REVISIT_OBFU
                     static uintptr_t scratch = ctx->m_ImageEnd + 0x100;
+#endif
                     if (!pystring::startswith(mnem, "nop")) {
                         FuncTailInsn fti;
-                        fti.ea(virtualBase).text(pystring::rstrip(fmt::format("{} {}", mnem, op_string))).size(size).code(std::string((char*)codeBuffer, size)).mnemonic(mnem).operands(op_string);
+                        fti.ea(virtualBase).size(size).code(std::string((char*)codeBuffer, size)).mnemonic(mnem).operands(op_string);
 
                         // history.push_back(fmt::format("{} {}", mnem, op_string));
                         history.push_back(fti);
@@ -958,41 +1118,6 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                         capture_groups, insn_groups, insn_list, '$')) {
 
                         LOG("multimatch: call-jmp");
-                        auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
-                            visited.erase(lhs.ea());
-                            visited.erase(rhs.ea());
-                            return lhs.ea() + lhs.size() == rhs.ea();
-                        });
-                        for (auto chunk : chunks) {
-                            if (auto chunk_len = chunk.back().ea() + chunk.back().size() - chunk.front().ea(); chunk_len < 11)
-                                mbs(chunk.front().ea()).nop(chunk_len);
-                            else {
-                                mbs(chunk.front().ea()).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16));
-                                break;
-                            }
-                        }
-
-#ifdef REVISIT_OBFU
-                        // this is really:  `call ctarget` `jmp jtarget`, and
-                        // we need a way to trigger our "call counter"... lets
-                        // use some temporary memory as a trampoline-ish device:
-                        set_rip(ctx->m_uc, scratch);
-                        scratch = mbs(scratch).nop(1).call(parseUint(capture_groups["ctarget"][0], 16)).jmp(parseUint(capture_groups["jtarget"][0], 16)).as<uintptr_t>();
-                        adjust_rsp(ctx->m_uc, +8);
-                        return;
-#endif
-                    }
-
-                    if (1 && multimatch(history,
-                                        {
-                                            R"(push rbp)",
-                                            R"(lea rbp, \[rel ({jtarget}[::address::])\])",
-                                            R"(xchg qword ptr \[rsp\], rbp)",
-                                            R"(jmp ({ctarget}[::address::]))",
-                                        },
-                                        capture_groups, insn_groups, insn_list, '$')) {
-
-                        LOG("multimatch: call-jmp-double-push");
                         auto chunks = _::chunk_if(insn_list, [&](auto lhs, auto rhs) {
                             visited.erase(lhs.ea());
                             visited.erase(rhs.ea());
@@ -1057,9 +1182,9 @@ static void CodeCallback(uc_engine* uc, uint64_t address, uint32_t size, void* u
                                         .jmp(*rcx_target)
                                         .db(0xCC);
 
+#if REVISIT_OBFU
                                     // revisit the modified code to ensure everything is ok
                                     // LOG("setting rip to {:x}", scratch);
-#if REVISIT_OBFU
                                     visited.erase(chunk.front().ea());
                                     set_rip(ctx->m_uc, scratch);
                                     scratch = mbs(scratch).nop(1).jmp(chunk.front().ea()).as<uintptr_t>();
@@ -1416,6 +1541,19 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type, uint64_t address, int s
 
     switch (type) {
         case UC_MEM_READ: {
+            if (address > 0x50000) {
+                Disassemble(uc, ctx->CurrentInstruction, ctx->CurrentInstructionLength, user_data);
+            }
+            if (!ctx->m_SaveReadRanges.empty()) {
+                auto _size = size;
+                auto _address = address;
+                if (_address >= ctx->m_ImageBase && _address < ctx->m_ImageEnd) {
+                    _address -= ctx->m_ImageBase;
+                    while (_size-- && _address < ctx->m_ReadBitmap.size()) {
+                        ctx->m_ReadBitmap[_address++] = true;
+                    }
+                }
+            }
             if (!ctx->m_SaveRead.empty() || ctx->m_Dwords) {
                 if (address > 0x50000) {
                     switch (size) {
@@ -1455,6 +1593,19 @@ static void RwxCallback(uc_engine* uc, uc_mem_type type, uint64_t address, int s
             }
         }
         case UC_MEM_WRITE: {
+            if (address > 0x50000) {
+                Disassemble(uc, ctx->CurrentInstruction, ctx->CurrentInstructionLength, user_data);
+            }
+            if (!ctx->m_SaveWrittenRanges.empty()) {
+                auto _size = size;
+                auto _address = address;
+                if (_address >= ctx->m_ImageBase && _address < ctx->m_ImageEnd) {
+                    _address -= ctx->m_ImageBase;
+                    while (_size-- && _address < ctx->m_WrittenBitmap.size()) {
+                        ctx->m_WrittenBitmap[_address++] = true;
+                    }
+                }
+            }
             if (!ctx->m_SaveWritten.empty() || ctx->m_Sandbox) {
                 if (ctx->m_Unpack && address >= ctx->m_ImageBase && address < ctx->m_ImageEnd) {
                     address -= ctx->m_ImageBase;
@@ -1927,6 +2078,7 @@ void WriteMemoryBitmapAccesses(uc_engine* uc, json* j, const std::vector<bool>& 
 
     std::vector<uint8_t> buf;
     uintptr_t base = 0x140000000;
+    std::string ranges;
     auto begin     = vec.begin();
     auto end       = vec.end();
     auto it        = std::find(begin, end, true);
@@ -1940,9 +2092,31 @@ void WriteMemoryBitmapAccesses(uc_engine* uc, json* j, const std::vector<bool>& 
             uc_mem_read(uc, start_ea, buf.data(), len);
             if (j) (*j)[last_folder][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
             //*outs << "Writing to '" << fn << "'\n";
-            file_put_contents(spread_filename(smart_path(fn)).string(), (char*)buf.data(), buf.size(), 1);
+            file_put_contents_if_changed(spread_filename(smart_path(fn)).string(), (char*)buf.data(), buf.size(), 1);
         }
         it = std::find(end_it, end, true);
+    }
+}
+
+void WriteMemoryBitmapAccessesSummary(uc_engine* uc, json* j, const std::vector<bool>& vec, const std::string& filename) {
+    std::vector<uint8_t> buf;
+    uintptr_t base = 0x140000000;
+    std::string ranges;
+    auto begin     = vec.begin();
+    auto end       = vec.end();
+    auto it        = std::find(begin, end, true);
+    while (it != end) {
+        uintptr_t start_ea = base + std::distance(begin, it);
+        auto end_it        = std::find(it, end, false);
+        if (end_it != end) {
+            size_t len     = std::distance(it, end_it);
+            ranges += fmt::format("    (0x{:x},0x{:x}),\n", start_ea, start_ea + len);
+            // if (j) (*j)["summary"][std::to_string(start_ea)][std::to_string(len)].push_back(json::array({short_prefix, filename}));
+        }
+        it = std::find(end_it, end, true);
+    }
+    if (!vec.empty()) {
+        file_put_contents_if_changed(filename, ranges.data(), ranges.length(), 1);
     }
 }
 bool tryAndReadJson(const std::string& filename, json& j, json defaultValue) {
@@ -2029,7 +2203,7 @@ void WriteMemoryAccesses(json* j, std::vector<std::tuple<uintptr_t, uint8_t>>& v
                 if (i > range_start_index && !to_write.empty()) {
                     std::string fn = fmt::format("{}_{:x}_{:x}_{}.bin", prefix, range_start_address, to_write.size(), filename);
                     //*outs << "Writing to '" << fn << "'\n";
-                    file_put_contents(spread_filename(fn).string(), (char*)to_write.data(), to_write.size(), 1);
+                    file_put_contents_if_changed(spread_filename(fn).string(), (char*)to_write.data(), to_write.size(), 1);
                     if (j) (*j)[last_folder][std::to_string(range_start_address)][std::to_string(to_write.size())].push_back(json::array({short_prefix, filename}));
                 }
                 to_write.clear();
@@ -2289,6 +2463,15 @@ void SaveResult(uc_engine* uc, uintptr_t fn_address, PeEmulation& ctx, json* j) 
         if (!ctx.m_SaveRead.empty()) WriteMemoryAccesses(nullptr, ctx.m_Read, ctx.filename, read_path.lexically_normal().string());
         if (!ctx.m_SaveWritten.empty()) WriteMemoryAccesses(j, ctx.m_Written, ctx.filename, written_path.lexically_normal().string());
         *outs << "bytes written: " << bytes_written << " bytes read: " << bytes_read << "\n";
+    }
+
+    if (!ctx.m_SaveReadRanges.empty()) {
+        std::string fnBitmapSummary = path_combine(ctx.m_SaveReadRanges, replace_extension(ctx.filename, ".ranges.py")).string();
+        WriteMemoryBitmapAccessesSummary(uc, j, ctx.m_ReadBitmap, fnBitmapSummary);
+    }
+    if (!ctx.m_SaveWrittenRanges.empty()) {
+        std::string fnBitmapSummary = path_combine(ctx.m_SaveWrittenRanges, replace_extension(ctx.filename, ".ranges.py")).string();
+        WriteMemoryBitmapAccessesSummary(uc, j, ctx.m_WrittenBitmap, fnBitmapSummary);
     }
     if (ctx.m_Dwords) {
         auto intersection = IntersectMapKeys(WrittenMemoryAsMap(ctx.m_Read), WrittenMemoryAsMap(ctx.m_Written));
@@ -2735,11 +2918,16 @@ int main(int argc, char** argv) {
 
     PeEmulation& ctx = g_ctx;
 
+
     auto cmdl = argh::parser(argc, argv);
     outs      = &std::cout;
 
+#ifdef USE_BOOST
+    init_multimatches();
+#endif
+
     if (!cmdl(1)) {
-        printf("usage: unicorn_pe (filename) [--decrypt | --unpack] [--disasm] [--save-dump] [--bitmap] [--obfu] [--save-written=PATH] [--save-read=PATH]\n");
+        printf("usage: unicorn_pe (filename) [--decrypt | --unpack] [--disasm] [--save-dump] [--bitmap] [--obfu] [--save-written=PATH] [--save-read[-ranges]=PATH]\n");
         return 0;
     }
 
@@ -2829,6 +3017,20 @@ int main(int argc, char** argv) {
         }
         *outs << "Saving memory reads to " << ctx.m_SaveRead << "\n";
         make_spread_folders(ctx.m_SaveRead);
+    }
+    if (cmdl("save-read-ranges") >> ctx.m_SaveReadRanges) {
+        if (!fs::is_directory(ctx.m_SaveReadRanges) && !fs::create_directory(ctx.m_SaveReadRanges)) {
+            *outs << "Not a directory: " << ctx.m_SaveReadRanges << "\n";
+            return 0;
+        }
+        *outs << "Saving memory read ranges to " << ctx.m_SaveReadRanges << "\n";
+    }
+    if (cmdl("save-written-ranges") >> ctx.m_SaveWrittenRanges) {
+        if (!fs::is_directory(ctx.m_SaveWrittenRanges) && !fs::create_directory(ctx.m_SaveWrittenRanges)) {
+            *outs << "Not a directory: " << ctx.m_SaveWrittenRanges << "\n";
+            return 0;
+        }
+        *outs << "Saving memory written ranges to " << ctx.m_SaveWrittenRanges << "\n";
     }
     uc_engine* uc = nullptr;
     auto err      = uc_open(UC_ARCH_X86, UC_MODE_64, &uc);
@@ -3046,19 +3248,38 @@ int main(int argc, char** argv) {
             continue;
         }
 
-        char* errch      = nullptr;
-        uintptr_t target = strtoull(param.second.c_str(), &errch, 16);
-        if (*errch != '\0') {
-            *outs << "string couldn't be converted to ll: " << param.second.c_str() << "\n";
-            continue;
+        auto st_start = param.second;
+
+        if (pystring::startswith(st_start, "<")) {
+            auto fn = pystring::slice(st_start, 1);
+            if (!file_exists(fn)) {
+                LOG("file does not exist: {}", fn);
+                break;
+            }
+            std::ifstream infile(fn);
+            uintptr_t a;
+            std::string h;
+            while (infile >> h) {
+                a = parseInt(h, 16, 0LLU);
+
+                *outs << "adding " << std::hex << a << std::dec << std::endl;
+                ctx.m_StartAddresses.emplace_back(a);
+            }
+        } else {
+            char* errch      = nullptr;
+            uintptr_t target = strtoull(param.second.c_str(), &errch, 16);
+            if (*errch != '\0') {
+                *outs << "string couldn't be converted to ll: " << param.second.c_str() << "\n";
+                continue;
+            }
+            *outs << '\t' << param.first << " : " << std::hex << param.second << std::dec << '\n';
+            ctx.m_StartAddresses.emplace_back(target);
         }
-        *outs << '\t' << param.first << " : " << std::hex << param.second << std::dec << '\n';
-        ctx.m_StartAddresses.emplace_back(target);
     }
 
     if (ctx.m_StartAddresses.size()) {
         for (uintptr_t ptr : ctx.m_StartAddresses) {
-            fns.emplace_back(fmt::format("start_{:x}", ptr), ptr);
+            fns.emplace_back(fmt::format("BalanceFunc_{:x}", ptr), ptr);
         }
     }
 
@@ -3078,6 +3299,7 @@ int main(int argc, char** argv) {
             if (r.contains(ptr)) {
                 return m_normalise_base(ptr);
             }
+            return {};
         });
 
         // sort and make unique, then add to list of functions to scan
@@ -3256,6 +3478,8 @@ int main(int argc, char** argv) {
 
         std::vector<mem::pointer> results;
 
+        // XXX HERE
+
         auto found = scan_all_with_iteratee(r, mem::pattern("48 8D 05 ?? ?? ?? ?? 48 89 45 ?? 48 8B 05 ?? ?? ?? ??"), iteratee);
         results.insert(results.end(), found.begin(), found.end());
         found = scan_all_with_iteratee(r, mem::pattern("48 8b 05 ?? ?? ?? ?? 48 89 45 ?? 48 8d 05 ?? ?? ?? ??"), iteratee6);
@@ -3314,7 +3538,7 @@ int main(int argc, char** argv) {
                         *outs << std::hex << address << "\t\t" << std::dec << insn.mnemonic << "\t\t" << op_string << "\n";
 
                         FuncTailInsn fti;
-                        fti.ea(address).text(fmt::format("{} {}", insn.mnemonic, op_string)).size(size).code(std::string((char*)codeBuffer, size)).mnemonic(insn.mnemonic).operands(op_string);
+                        fti.ea(address).size(size).code(std::string((char*)codeBuffer, size)).mnemonic(insn.mnemonic).operands(op_string);
 
                         insns.emplace_back(std::move(fti));
 
@@ -3510,6 +3734,12 @@ int main(int argc, char** argv) {
         ResetRegisters(uc, ctx);
 
         *outs << "Function: " << ctx.filename << "\n";
+        if (!ctx.m_SaveReadRanges.empty()) {
+            ctx.m_ReadBitmap.resize(ctx.m_ImageEnd - ctx.m_ImageBase);
+        }
+        if (!ctx.m_SaveWrittenRanges.empty()) {
+            ctx.m_WrittenBitmap.resize(ctx.m_ImageEnd - ctx.m_ImageBase);
+        }
         if (ctx.m_Unpack) {
             ctx.m_WrittenBitmap.resize(ctx.m_ImageEnd - ctx.m_ImageBase);
         }
@@ -3557,6 +3787,12 @@ int main(int argc, char** argv) {
         SaveResult(uc, fn_address, ctx, &json_written);
     } else {
         json json_written;
+        if (!ctx.m_SaveReadRanges.empty()) {
+            ctx.m_ReadBitmap.resize(ctx.m_ImageEnd - ctx.m_ImageBase);
+        }
+        if (!ctx.m_SaveWrittenRanges.empty()) {
+            ctx.m_WrittenBitmap.resize(ctx.m_ImageEnd - ctx.m_ImageBase);
+        }
         if (!ctx.m_SaveWritten.empty()) {
             tryAndReadJson((fs::path(ctx.m_SaveWritten) / "files.json").string(), json_written, {});
         }

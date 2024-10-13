@@ -1,6 +1,14 @@
 #pragma once
-#define String std::string
-#define VectorString std::vector<String>
+#include <string>
+#include <vector>
+
+#include "InsnDistorm.h"
+
+class FuncTailInsn;
+using String = std::string;
+using VectorString = std::vector<String>;
+
+extern std::vector<FuncTailInsn> m_Instructions;
 
 #define GETSET(TYPE, FN, DEFAULT) \
     GETSET2(TYPE, FN, FN##_, DEFAULT)
@@ -33,8 +41,7 @@
 
 class FuncTailInsn {
 public:
-    GETSET(String, text, {});
-    GETONLY(String, insn, text_);            
+    // GETONLY(String, insn, text_);            
     GETSET(uintptr_t, ea, {});
     GETSET(int, sp, {});
     GETSET(int, spd, {});
@@ -43,6 +50,7 @@ public:
     GETSET(String, mnemonic, {});
     GETSET(int, size, {});
     GETSET(uintptr_t, target, {});
+    SETONLY(InsnDistorm, insn, insn_);
 
     // self._insn_comments = comments
     // self._insn_warnings = warnings
@@ -55,10 +63,21 @@ public:
     // self._insn_flow_refs_from = flow_refs_from
     // self._insn_flow_refs_to = flow_refs_to
 
-	std::string asString() {
-		return text_;
-	}
+	String asString() const;
+
+    String text() const;
+
+    InsnDistorm insn_;
+    String text_;
 };
 
 #undef String
 #undef VectorString
+#undef CLASS
+#undef GETONLY
+#undef GETSET
+#undef GETSET2
+#undef GETSETONLY
+#undef METHOD
+#undef SETONLY
+#undef VARONLY

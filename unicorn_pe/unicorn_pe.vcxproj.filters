@@ -45,7 +45,7 @@
     <ClCompile Include="FuncTailInsn.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="multimatch.cpp">
+    <ClCompile Include="s_multimatch.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="MegaFunc.cpp">
@@ -64,6 +64,18 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="TemporaryFile.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="distorm_plug.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="MultiMatch.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="multimatches.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="InsnDistorm.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
@@ -92,7 +104,7 @@
     <ClInclude Include="FuncTailInsn.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="multimatch.h">
+    <ClInclude Include="s_multimatch.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="xrange.h">
@@ -117,6 +129,21 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="TemporaryFile.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="distorm_plug.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="MultiMatch.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="InsnShimInterface.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="InsnDistorm.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="multimatches.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

@@ -15,6 +15,17 @@ public:
 	size_t m_cbSize;
 };
 
+class virtual_buffer_based_t : public virtual_buffer_t
+{
+public:
+	virtual_buffer_based_t(size_t size, uintptr_t base);
+	uintptr_t GetBase() { return m_base; }
+	void * atAddress(uintptr_t address) { return (void*)((uintptr_t)m_pBuffer + address - m_base); }
+
+	uintptr_t m_base;
+};
+
+
 class crt_buffer_t
 {
 public:
